@@ -1,0 +1,40 @@
+txt2img:
+  sd_model_key: stable-diffusion-v1-5/stable-diffusion-v1-5
+  ip_adapter_image_path:
+  prompt: clean flat albedo colors, consistent object materials, texture atlas, no lighting
+  negative_prompt: strong light, highlights, reflections, cast shadow, ambient shadow, darkness, color bleeding, multicolored noise, gradients
+  seed: 20260928
+  width: 1024
+  height: 512
+  num_images_per_prompt: 1
+  guidance_scale: 5.0
+  num_inference_steps: 24
+  controlnet_units:
+    - preprocessor: none
+      controlnet_key: lllyasviel/control_v11f1p_sd15_depth
+      condition_image_path:
+      weight: 1.0
+
+inpaint:
+  sd_model_key: stable-diffusion-v1-5/stable-diffusion-v1-5
+  image_path:
+  mask_path:
+  ip_adapter_image_path:
+  prompt: clean flat albedo colors, consistent object materials, texture atlas, no lighting
+  negative_prompt: strong light, highlights, reflections, cast shadow, ambient shadow, darkness, color bleeding, multicolored noise, gradients
+  seed: 20260928
+  width: 1024
+  height: 512
+  num_images_per_prompt: 1
+  guidance_scale: 3.0
+  num_inference_steps: 24
+  denoising_strength: 0.85
+  controlnet_units:
+    - preprocessor: none
+      controlnet_key: lllyasviel/control_v11f1p_sd15_depth
+      condition_image_path:
+      weight: 1.0
+    - preprocessor: inpaint_global_harmonious
+      controlnet_key: lllyasviel/control_v11p_sd15_inpaint
+      condition_image_path: ""
+      weight: 0.5

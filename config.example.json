@@ -1,0 +1,6 @@
+{
+  "UNITEX_HOST": "user@your-gpu-host",
+  "UNITEX_SSH_KEY": "C:/Users/YOUR_USER/.ssh/id_ed25519_unitex",
+  "UNITEX_REMOTE_ROOT": "/data/unitex-work",
+  "UNITEX_GPU": 1
+}
