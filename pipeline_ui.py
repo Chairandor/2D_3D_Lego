@@ -29,6 +29,8 @@ PIPELINE = ROOT / "pipeline_2d_to_lego.py"
 LEGO_ROOT = ROOT / "legolization"
 LEGO_PYTHON = LEGO_ROOT / ".venv" / "Scripts" / "python.exe"
 SCALE_RECOMMENDER = ROOT / "lego_scale_recommendation.py"
+RECOMMENDATION_MIN_STUDS = 8
+RECOMMENDATION_MAX_STUDS = 32
 DEFAULT_IMAGE = ROOT / "models" / "chicken" / "7ken.png"
 UPLOADS = ROOT / "ui_uploads"
 
@@ -357,13 +359,17 @@ class PipelineController:
             return {"status": "unavailable"}
         try:
             payload = json.loads(cache.read_text(encoding="utf-8"))
-            if payload.get("source_mtime_ns") == mesh.stat().st_mtime_ns:
+            if (
+                payload.get("source_mtime_ns") == mesh.stat().st_mtime_ns
+                and payload.get("minimum") == RECOMMENDATION_MIN_STUDS
+                and payload.get("maximum") == RECOMMENDATION_MAX_STUDS
+            ):
                 return {"status": "ready", **payload}
         except (OSError, json.JSONDecodeError):
             pass
         with self.lock:
             if self.recommendation_job == mesh:
-                return {"status": "calculating", "minimum": 8, "maximum": 64}
+                return {"status": "calculating", "minimum": RECOMMENDATION_MIN_STUDS, "maximum": RECOMMENDATION_MAX_STUDS}
             error = self.recommendation_error.get(mesh)
             if error:
                 return {"status": "error", "error": error}
@@ -375,7 +381,7 @@ class PipelineController:
             args=(mesh, cache),
             daemon=True,
         ).start()
-        return {"status": "calculating", "minimum": 8, "maximum": 64}
+        return {"status": "calculating", "minimum": RECOMMENDATION_MIN_STUDS, "maximum": RECOMMENDATION_MAX_STUDS}
 
     def _calculate_lego_recommendation(self, mesh: Path, cache: Path) -> None:
         try:
@@ -385,9 +391,9 @@ class PipelineController:
                     str(SCALE_RECOMMENDER),
                     str(mesh),
                     "--minimum",
-                    "8",
+                    str(RECOMMENDATION_MIN_STUDS),
                     "--maximum",
-                    "64",
+                    str(RECOMMENDATION_MAX_STUDS),
                 ],
                 cwd=LEGO_ROOT,
                 stdout=subprocess.PIPE,
@@ -408,6 +414,12 @@ class PipelineController:
             )
             with self.lock:
                 self.recommendation_error.pop(mesh, None)
+        except subprocess.TimeoutExpired:
+            with self.lock:
+                self.recommendation_error[mesh] = (
+                    "推荐宽度计算超过 5 分钟；可手动填写 Stud。"
+                    "这不代表 Legolization 的积木构建结果。"
+                )
         except Exception as exc:  # noqa: BLE001
             with self.lock:
                 self.recommendation_error[mesh] = str(exc)
