@@ -11,7 +11,7 @@
 
 ## 推荐宽度
 
-UI 在当前任务结束且 PLY 已存在时后台调用上游 `recommend_voxelization`。范围 8–32 Stud，`up=y`、`grid_phases=1`、`fill=False` 与当前构建一致。上游按轮廓误差、特征保留、连接度等排序；我们没有重写评分器。结果缓存到 `oriented/lego_recommendation.json`，网格时间戳或搜索范围改变则重新计算。点击“使用推荐值”只修改输入框。
+UI 在当前任务结束且 PLY 已存在时后台调用上游 `recommend_voxelization`。范围 8–64 Stud，`up=y`、`grid_phases=1`、`fill=False` 与当前构建一致。上游按轮廓误差、特征保留、连接度等排序；我们没有重写评分器。结果缓存到 `oriented/lego_recommendation.json`，网格时间戳改变则重新计算。点击“使用推荐值”只修改输入框。
 
 ## 断点
 
