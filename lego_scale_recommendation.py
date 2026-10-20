@@ -15,7 +15,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mesh", type=Path)
     parser.add_argument("--minimum", type=int, default=8)
-    parser.add_argument("--maximum", type=int, default=64)
+    parser.add_argument("--maximum", type=int, default=128)
     args = parser.parse_args()
     if args.minimum <= 0 or args.maximum < args.minimum:
         parser.error("invalid recommendation range")
