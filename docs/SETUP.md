@@ -53,7 +53,45 @@ cd ..
 
 安装其上游定义的依赖；Python 版本由该项目决定。颜色转换和推荐脚本会调用这个环境，而不是 Hunyuan 环境。
 
-LDraw 零件库单独准备到 `LDrawLibrary/ldraw`。若网络可用，可使用上游 `parts sync`；此前部署遇到过下载 403，因此必要时按 LDraw 的官方渠道下载并手工展开，确认该目录包含 `parts` 与颜色配置。
+#### LDraw 零件库（LEGO MPD 网页预览）
+
+`git clone` 不包含零件库。当前流水线的普通 `legolization build` 使用 Legolization 自带的积木目录生成 MPD，**缺少此处的 LDraw 库不会阻止普通 MPD 构建和下载**；但网页无法渲染 LEGO 卡片。可选 Bundle 的零件分析、渲染或说明书功能可能另有零件库要求。
+
+网页只从项目根目录的以下固定位置读取零件库，不会自动读取 Legolization 的用户级托管目录：
+
+```text
+2D_3D_Lego/
+  LDrawLibrary/
+    ldraw/
+      LDConfig.ldr
+      parts/
+      p/
+```
+
+准备方法任选其一：
+
+1. 从 [LDraw 官方零件库更新页](https://library.ldraw.org/updates)获取 **Complete LDraw.org Library Zip archive**，解压后把包含 `parts/`、`p/`、`LDConfig.ldr` 的那一层放到上述 `LDrawLibrary/ldraw/`。注意不要多套一层 `ldraw/ldraw/`。此前上游自动下载曾遇到 HTTP 403，此时可用这条路线。
+2. 如果 Legolization 的 `parts sync` 能正常完成，也可以复制它下载的库。在项目根目录执行：
+
+   ```powershell
+   cd legolization
+   uv run legolization parts sync
+   $managedLdraw = (& .\.venv\Scripts\python.exe -c 'from legolization.parts_library import library_dir, managed_root; print(library_dir(managed_root()))').Trim()
+   cd ..
+   if (-not (Test-Path -LiteralPath $managedLdraw -PathType Container)) { throw 'parts sync 未找到可用的零件库' }
+   New-Item -ItemType Directory -Force -Path .\LDrawLibrary\ldraw | Out-Null
+   Copy-Item -Path (Join-Path $managedLdraw '*') -Destination .\LDrawLibrary\ldraw -Recurse -Force
+   ```
+
+复制或解压后，在项目根目录检查下面三条命令是否都输出 `True`：
+
+```powershell
+Test-Path -LiteralPath .\LDrawLibrary\ldraw\parts -PathType Container
+Test-Path -LiteralPath .\LDrawLibrary\ldraw\p -PathType Container
+Test-Path -LiteralPath .\LDrawLibrary\ldraw\LDConfig.ldr -PathType Leaf
+```
+
+如果 UI 已经打开，放好零件库后刷新页面；已生成的 MPD 下载链接无需重新构建。零件库被 `.gitignore` 排除，不会随代码推送或克隆。
 
 ### Florence-2 与 SAM 2
 
