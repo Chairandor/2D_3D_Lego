@@ -406,7 +406,7 @@ class PipelineController:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=300,
+                timeout=900,
                 check=False,
             )
             if result.returncode != 0:
