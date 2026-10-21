@@ -33,6 +33,7 @@ RECOMMENDATION_MIN_STUDS = 8
 RECOMMENDATION_MAX_STUDS = 128
 DEFAULT_IMAGE = ROOT / "models" / "chicken" / "7ken.png"
 UPLOADS = ROOT / "ui_uploads"
+STATIC_ROOT = ROOT / "web_assets"
 
 
 def safe_name(name: str) -> str:
@@ -69,15 +70,17 @@ def artifact_inventory(run_dir: Path | None) -> list[dict[str, object]]:
     for label, relative, kind in definitions:
         path = run_dir / relative
         if path.is_file():
-            result.append(
-                {
-                    "label": label,
-                    "relative": relative,
-                    "kind": kind,
-                    "size": path.stat().st_size,
-                    "url": "/file?path=" + urllib.parse.quote(str(path)),
-                }
-            )
+            item = {
+                "label": label,
+                "relative": relative,
+                "kind": kind,
+                "size": path.stat().st_size,
+                "mtime_ns": path.stat().st_mtime_ns,
+                "url": "/file?path=" + urllib.parse.quote(str(path)),
+            }
+            if kind == "model" and path.suffix.lower() in {".glb", ".ply"}:
+                item["preview_format"] = path.suffix.lower().removeprefix(".")
+            result.append(item)
     lego_models: list[tuple[int, Path]] = []
     for path in run_dir.glob("lego-*/model.mpd"):
         match = re.fullmatch(r"lego-(\d+)", path.parent.name)
@@ -90,6 +93,7 @@ def artifact_inventory(run_dir: Path | None) -> list[dict[str, object]]:
                 "relative": path.relative_to(run_dir).as_posix(),
                 "kind": "model",
                 "size": path.stat().st_size,
+                "mtime_ns": path.stat().st_mtime_ns,
                 "url": "/file?path=" + urllib.parse.quote(str(path)),
             }
         )
@@ -104,6 +108,7 @@ def artifact_inventory(run_dir: Path | None) -> list[dict[str, object]]:
                 "relative": "lego/model.mpd",
                 "kind": "model",
                 "size": legacy.stat().st_size,
+                "mtime_ns": legacy.stat().st_mtime_ns,
                 "url": "/file?path=" + urllib.parse.quote(str(legacy)),
             }
         )
@@ -440,7 +445,7 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
 .checks{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:15px 0}.check{display:flex;gap:8px;align-items:flex-start;background:#f3f0e7;border:1px solid #dfd9ca;border-radius:10px;padding:9px;font-size:13px}.check input{margin-top:2px}
 .actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:15px}button{border:0;border-radius:11px;padding:11px 14px;font:inherit;font-weight:750;cursor:pointer;background:#e6e1d4;color:var(--ink)}button.primary{background:var(--yellow)}button.danger{background:#f3d4cf;color:#852c20}button:hover{filter:brightness(.97)}button:disabled{opacity:.5;cursor:not-allowed}
 .hint{color:var(--muted);font-size:12px;line-height:1.55}.recommendation{margin-top:8px;padding:10px 11px;border:1px solid #cbd8c7;border-radius:10px;background:#edf5e9;color:#31593d;font-size:13px;line-height:1.45}.recommendation button{padding:5px 9px;margin-left:7px;background:#d5e8cf}.steps{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-bottom:16px}.step{font-size:12px;padding:9px 7px;border-radius:9px;text-align:center;background:#ece8dd;color:#73766c}.step.active{background:#dfeade;color:#285a3f;font-weight:750}.step.wait{background:#f4e5b2;color:#755b00;font-weight:750}.notices{display:grid;gap:8px;margin:10px 0}.notice{border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.5}.notice.warning{background:#fff1c7;color:#715300;border:1px solid #e2c56c}.notice.error{background:#f7d7d2;color:#842f23;border:1px solid #dc9d94}
-.log{height:310px;overflow:auto;white-space:pre-wrap;background:#20231f;color:#dce8d5;border-radius:13px;padding:14px;font:12px/1.5 Consolas,monospace}.meta{display:flex;flex-wrap:wrap;gap:8px;color:var(--muted);font-size:12px;margin:10px 0}.meta span{background:#f0ede5;padding:5px 8px;border-radius:7px}.artifacts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}.artifact{border:1px solid var(--line);border-radius:13px;overflow:hidden;background:white}.artifact img{display:block;width:100%;height:190px;object-fit:contain;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px}.artifact .info{padding:10px}.artifact b{display:block;font-size:13px}.artifact a{font-size:12px;color:var(--blue);text-decoration:none}.empty{color:var(--muted);padding:35px 10px;text-align:center;border:1px dashed var(--line);border-radius:12px}
+.log{height:310px;overflow:auto;white-space:pre-wrap;background:#20231f;color:#dce8d5;border-radius:13px;padding:14px;font:12px/1.5 Consolas,monospace}.meta{display:flex;flex-wrap:wrap;gap:8px;color:var(--muted);font-size:12px;margin:10px 0}.meta span{background:#f0ede5;padding:5px 8px;border-radius:7px}.artifacts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}.artifact{border:1px solid var(--line);border-radius:13px;overflow:hidden;background:white}.artifact img{display:block;width:100%;height:190px;object-fit:contain;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px}.model-preview{height:190px;display:flex;align-items:center;justify-content:center;padding:8px;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px;color:#5e625a;font-size:12px;text-align:center;touch-action:none}.model-preview canvas{display:block;width:100%;height:100%;cursor:grab}.model-preview canvas:active{cursor:grabbing}.artifact .info{padding:10px}.artifact b{display:block;font-size:13px}.artifact a{font-size:12px;color:var(--blue);text-decoration:none}.empty{color:var(--muted);padding:35px 10px;text-align:center;border:1px dashed var(--line);border-radius:12px}
 @media(max-width:900px){.grid{grid-template-columns:1fr}.artifacts{grid-template-columns:1fr 1fr}.hero{align-items:start;flex-direction:column}}@media(max-width:560px){.shell{padding:14px}.artifacts,.checks{grid-template-columns:1fr}.steps{grid-template-columns:1fr 1fr}.hero h1{font-size:25px}}
 </style></head>
 <body><div class="shell">
@@ -466,8 +471,10 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
 <div class="meta"><span id="runDir">尚未运行</span><span id="elapsed">0 秒</span></div><div id="notices" class="notices"></div><div id="log" class="log">等待任务……</div>
 <h2 style="margin-top:18px">产物与预览</h2><div id="artifacts" class="empty">运行后会在这里显示检查图和模型下载链接</div>
 </section></div></div>
+<script type="importmap">{"imports":{"three":"/static/three/three.module.js","three/addons/":"/static/three/addons/"}}</script>
+<script type="module" src="/static/model-preview.js"></script>
 <script>
-const $=id=>document.getElementById(id); let polling=false;
+const $=id=>document.getElementById(id); let polling=false, artifactSignature=null;
 async function api(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});const d=await r.json();if(!r.ok)throw new Error(d.error||'请求失败');return d}
 async function uploadFile(input){if(!input.files.length)return;const f=input.files[0];const reader=new FileReader();reader.onload=async()=>{try{const d=await api('/api/upload',{name:f.name,data:reader.result.split(',')[1]});$('imagePath').value=d.path;$('outputDir').value=d.output_dir}catch(e){alert(e.message)}};reader.readAsDataURL(f)}
 async function startRun(){try{await api('/api/start',{image_path:$('imagePath').value,output_dir:$('outputDir').value,accept_preprocess:$('acceptPre').checked,accept_geometry:$('acceptGeo').checked,accept_unitex:$('acceptTex').checked,build_lego:$('buildLego').checked,bundle:$('bundle').checked,force:$('force').checked,projection:$('projection').value,unitex_gpu:$('unitexGpu').value,target_studs:$('studs').value});polling=true;refresh()}catch(e){alert(e.message)}}
@@ -475,7 +482,23 @@ async function stopRun(){try{await api('/api/stop',{})}catch(e){alert(e.message)
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function stageIndex(state,arts){const s=state.stage||'';if(s==='foreground_review')return 0;if(s==='geometry_review')return 1;if(s==='unitex_review')return 2;if(s==='oriented_review')return 3;if(s==='complete')return 4;if(arts.some(a=>a.relative.includes('hunyuan/')))return 1;return 0}
 function showRecommendation(r){const box=$('legoRecommendation');if(!r||r.status==='unavailable'){box.hidden=true;return}box.hidden=false;if(r.status==='ready'){box.innerHTML=`Legolization 推荐：<b>${r.target_studs} Stud</b><button type="button" onclick="$('studs').value=${r.target_studs}">使用推荐值</button><br><small>在 ${r.minimum}–${r.maximum} Stud 范围内按模型体素化质量自动选择；不保证最终一定可构建。</small>`}else if(r.status==='calculating'){box.textContent=`正在计算 Legolization 推荐宽度（${r.minimum}–${r.maximum} Stud）……`}else if(r.status==='waiting'){box.textContent='当前任务完成后计算 Legolization 推荐宽度……'}else{box.textContent='推荐宽度计算失败：'+(r.error||'未知错误')}}
-async function refresh(){try{const r=await fetch('/api/status');const d=await r.json();$('badge').textContent=d.message+(d.running?' · '+d.elapsed+'s':'');$('runButton').disabled=d.running;showRecommendation(d.lego_recommendation);const notices=d.notices||[];$('notices').innerHTML=notices.map(n=>`<div class="notice ${n.level==='error'?'error':'warning'}">${esc(n.text)}</div>`).join('');$('log').textContent=d.logs||'等待任务……';$('log').scrollTop=$('log').scrollHeight;$('runDir').textContent=d.run_dir||'尚未运行';$('elapsed').textContent=d.elapsed+' 秒';const idx=stageIndex(d.pipeline_state||{},d.artifacts||[]);[...$('steps').children].forEach((e,i)=>{e.className='step '+(i<idx?'active':i===idx?'wait':'')});const arts=d.artifacts||[];$('artifacts').className=arts.length?'artifacts':'empty';$('artifacts').innerHTML=arts.length?arts.map(a=>`<div class="artifact">${a.kind==='image'?`<img src="${a.url}&v=${Date.now()}" alt="${esc(a.label)}">`:''}<div class="info"><b>${esc(a.label)}</b><a href="${a.url}" target="_blank">打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB</a></div></div>`).join(''):'运行后会在这里显示检查图和模型下载链接';polling=!!d.running;if(d.running)setTimeout(refresh,1200)}catch(e){polling=false;$('badge').textContent='连接失败'}}
+function renderArtifacts(arts){
+  const signature=JSON.stringify(arts.map(a=>[a.relative,a.size,a.mtime_ns]));
+  if(signature===artifactSignature)return;
+  window.disposeModelPreviews?.();
+  artifactSignature=signature;
+  const visual=a=>a.kind==='image'
+    ?`<img src="${esc(a.url)}&v=${a.mtime_ns}" alt="${esc(a.label)}">`
+    :a.preview_format
+      ?`<div class="model-preview" data-model-format="${esc(a.preview_format)}" data-model-url="${esc(a.url)}&v=${a.mtime_ns}">等待加载 3D 预览…</div>`
+      :'';
+  $('artifacts').className=arts.length?'artifacts':'empty';
+  $('artifacts').innerHTML=arts.length
+    ?arts.map(a=>`<div class="artifact">${visual(a)}<div class="info"><b>${esc(a.label)}</b><a href="${esc(a.url)}" target="_blank" rel="noopener">打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB</a></div></div>`).join('')
+    :'运行后会在这里显示检查图和模型下载链接';
+  window.mountModelPreviews?.();
+}
+async function refresh(){try{const r=await fetch('/api/status');const d=await r.json();$('badge').textContent=d.message+(d.running?' · '+d.elapsed+'s':'');$('runButton').disabled=d.running;showRecommendation(d.lego_recommendation);const notices=d.notices||[];$('notices').innerHTML=notices.map(n=>`<div class="notice ${n.level==='error'?'error':'warning'}">${esc(n.text)}</div>`).join('');$('log').textContent=d.logs||'等待任务……';$('log').scrollTop=$('log').scrollHeight;$('runDir').textContent=d.run_dir||'尚未运行';$('elapsed').textContent=d.elapsed+' 秒';const idx=stageIndex(d.pipeline_state||{},d.artifacts||[]);[...$('steps').children].forEach((e,i)=>{e.className='step '+(i<idx?'active':'')+(i===idx?'wait':'')});renderArtifacts(d.artifacts||[]);polling=!!d.running;if(d.running)setTimeout(refresh,1200)}catch(e){polling=false;$('badge').textContent='连接失败'}}
 refresh();setInterval(()=>{if(!polling)refresh()},5000);
 </script></body></html>"""
 
@@ -511,6 +534,19 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif parsed.path == "/api/status":
             self.send_json(CONTROLLER.status())
+        elif parsed.path.startswith("/static/"):
+            path = (STATIC_ROOT / parsed.path.removeprefix("/static/")).resolve()
+            if not path.is_file() or path.suffix != ".js" or not path.is_relative_to(STATIC_ROOT.resolve()):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            with path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    self.wfile.write(chunk)
         elif parsed.path == "/file":
             query = urllib.parse.parse_qs(parsed.query)
             path = Path(query.get("path", [""])[0]).resolve()

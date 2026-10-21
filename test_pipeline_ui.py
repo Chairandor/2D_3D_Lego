@@ -44,6 +44,30 @@ class PipelineUITests(unittest.TestCase):
             artifacts = pipeline_ui.artifact_inventory(run_dir)
             self.assertEqual([item["relative"] for item in artifacts], ["unitex/mv_rgb.png"])
 
+    def test_only_non_lego_models_receive_browser_previews(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            run_dir = Path(temporary)
+            for relative in (
+                "hunyuan/mesh_shape_review_clean.glb",
+                "unitex/textured_mesh.glb",
+                "oriented/mesh_upright.glb",
+                "oriented/lego_input.ply",
+                "lego-16/model.mpd",
+            ):
+                target = run_dir / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"test")
+            artifacts = pipeline_ui.artifact_inventory(run_dir)
+            previews = {
+                item["relative"]: item.get("preview_format")
+                for item in artifacts
+            }
+            self.assertEqual(previews["hunyuan/mesh_shape_review_clean.glb"], "glb")
+            self.assertEqual(previews["unitex/textured_mesh.glb"], "glb")
+            self.assertEqual(previews["oriented/mesh_upright.glb"], "glb")
+            self.assertEqual(previews["oriented/lego_input.ply"], "ply")
+            self.assertIsNone(previews["lego-16/model.mpd"])
+
 
 if __name__ == "__main__":
     unittest.main()
