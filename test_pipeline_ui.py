@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pipeline_ui
 
@@ -44,9 +45,12 @@ class PipelineUITests(unittest.TestCase):
             artifacts = pipeline_ui.artifact_inventory(run_dir)
             self.assertEqual([item["relative"] for item in artifacts], ["unitex/mv_rgb.png"])
 
-    def test_only_non_lego_models_receive_browser_previews(self) -> None:
+    def test_model_previews_include_lego_when_parts_library_exists(self) -> None:
         with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
             run_dir = Path(temporary)
+            library = run_dir / "ldraw"
+            (library / "parts").mkdir(parents=True)
+            (library / "LDConfig.ldr").write_text("0 colours", encoding="utf-8")
             for relative in (
                 "hunyuan/mesh_shape_review_clean.glb",
                 "unitex/textured_mesh.glb",
@@ -57,7 +61,8 @@ class PipelineUITests(unittest.TestCase):
                 target = run_dir / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(b"test")
-            artifacts = pipeline_ui.artifact_inventory(run_dir)
+            with mock.patch.object(pipeline_ui, "LDRAW_ROOT", library):
+                artifacts = pipeline_ui.artifact_inventory(run_dir)
             previews = {
                 item["relative"]: item.get("preview_format")
                 for item in artifacts
@@ -66,7 +71,18 @@ class PipelineUITests(unittest.TestCase):
             self.assertEqual(previews["unitex/textured_mesh.glb"], "glb")
             self.assertEqual(previews["oriented/mesh_upright.glb"], "glb")
             self.assertEqual(previews["oriented/lego_input.ply"], "ply")
-            self.assertIsNone(previews["lego-16/model.mpd"])
+            self.assertEqual(previews["lego-16/model.mpd"], "mpd")
+
+    def test_lego_preview_falls_back_without_parts_library(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            run_dir = Path(temporary)
+            model = run_dir / "lego-8" / "model.mpd"
+            model.parent.mkdir()
+            model.write_text("0 FILE model.mpd", encoding="utf-8")
+            with mock.patch.object(pipeline_ui, "LDRAW_ROOT", run_dir / "missing-ldraw"):
+                artifacts = pipeline_ui.artifact_inventory(run_dir)
+            self.assertEqual(len(artifacts), 1)
+            self.assertNotIn("preview_format", artifacts[0])
 
 
 if __name__ == "__main__":

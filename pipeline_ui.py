@@ -34,6 +34,7 @@ RECOMMENDATION_MAX_STUDS = 128
 DEFAULT_IMAGE = ROOT / "models" / "chicken" / "7ken.png"
 UPLOADS = ROOT / "ui_uploads"
 STATIC_ROOT = ROOT / "web_assets"
+LDRAW_ROOT = ROOT / "LDrawLibrary" / "ldraw"
 
 
 def safe_name(name: str) -> str:
@@ -81,37 +82,40 @@ def artifact_inventory(run_dir: Path | None) -> list[dict[str, object]]:
             if kind == "model" and path.suffix.lower() in {".glb", ".ply"}:
                 item["preview_format"] = path.suffix.lower().removeprefix(".")
             result.append(item)
+    ldraw_available = (LDRAW_ROOT / "parts").is_dir() and (LDRAW_ROOT / "LDConfig.ldr").is_file()
     lego_models: list[tuple[int, Path]] = []
     for path in run_dir.glob("lego-*/model.mpd"):
         match = re.fullmatch(r"lego-(\d+)", path.parent.name)
         if match:
             lego_models.append((int(match.group(1)), path))
     for studs, path in sorted(lego_models):
-        result.append(
-            {
-                "label": f"LEGO 模型（{studs} studs）",
-                "relative": path.relative_to(run_dir).as_posix(),
-                "kind": "model",
-                "size": path.stat().st_size,
-                "mtime_ns": path.stat().st_mtime_ns,
-                "url": "/file?path=" + urllib.parse.quote(str(path)),
-            }
-        )
+        item = {
+            "label": f"LEGO 模型（{studs} studs）",
+            "relative": path.relative_to(run_dir).as_posix(),
+            "kind": "model",
+            "size": path.stat().st_size,
+            "mtime_ns": path.stat().st_mtime_ns,
+            "url": "/file?path=" + urllib.parse.quote(str(path)),
+        }
+        if ldraw_available:
+            item["preview_format"] = "mpd"
+        result.append(item)
     legacy = run_dir / "lego" / "model.mpd"
     lego_input = run_dir / "oriented" / "lego_input.ply"
     if legacy.is_file() and (
         not lego_input.is_file() or legacy.stat().st_mtime >= lego_input.stat().st_mtime
     ):
-        result.append(
-            {
-                "label": "LEGO 模型（旧版输出目录）",
-                "relative": "lego/model.mpd",
-                "kind": "model",
-                "size": legacy.stat().st_size,
-                "mtime_ns": legacy.stat().st_mtime_ns,
-                "url": "/file?path=" + urllib.parse.quote(str(legacy)),
-            }
-        )
+        item = {
+            "label": "LEGO 模型（旧版输出目录）",
+            "relative": "lego/model.mpd",
+            "kind": "model",
+            "size": legacy.stat().st_size,
+            "mtime_ns": legacy.stat().st_mtime_ns,
+            "url": "/file?path=" + urllib.parse.quote(str(legacy)),
+        }
+        if ldraw_available:
+            item["preview_format"] = "mpd"
+        result.append(item)
     return result
 
 
@@ -446,6 +450,8 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
 .actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:15px}button{border:0;border-radius:11px;padding:11px 14px;font:inherit;font-weight:750;cursor:pointer;background:#e6e1d4;color:var(--ink)}button.primary{background:var(--yellow)}button.danger{background:#f3d4cf;color:#852c20}button:hover{filter:brightness(.97)}button:disabled{opacity:.5;cursor:not-allowed}
 .hint{color:var(--muted);font-size:12px;line-height:1.55}.recommendation{margin-top:8px;padding:10px 11px;border:1px solid #cbd8c7;border-radius:10px;background:#edf5e9;color:#31593d;font-size:13px;line-height:1.45}.recommendation button{padding:5px 9px;margin-left:7px;background:#d5e8cf}.steps{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-bottom:16px}.step{font-size:12px;padding:9px 7px;border-radius:9px;text-align:center;background:#ece8dd;color:#73766c}.step.active{background:#dfeade;color:#285a3f;font-weight:750}.step.wait{background:#f4e5b2;color:#755b00;font-weight:750}.notices{display:grid;gap:8px;margin:10px 0}.notice{border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.5}.notice.warning{background:#fff1c7;color:#715300;border:1px solid #e2c56c}.notice.error{background:#f7d7d2;color:#842f23;border:1px solid #dc9d94}
 .log{height:310px;overflow:auto;white-space:pre-wrap;background:#20231f;color:#dce8d5;border-radius:13px;padding:14px;font:12px/1.5 Consolas,monospace}.meta{display:flex;flex-wrap:wrap;gap:8px;color:var(--muted);font-size:12px;margin:10px 0}.meta span{background:#f0ede5;padding:5px 8px;border-radius:7px}.artifacts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}.artifact{border:1px solid var(--line);border-radius:13px;overflow:hidden;background:white}.artifact img{display:block;width:100%;height:190px;object-fit:contain;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px}.model-preview{height:190px;display:flex;align-items:center;justify-content:center;padding:8px;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px;color:#5e625a;font-size:12px;text-align:center;touch-action:none}.model-preview canvas{display:block;width:100%;height:100%;cursor:grab}.model-preview canvas:active{cursor:grabbing}.artifact .info{padding:10px}.artifact b{display:block;font-size:13px}.artifact a{font-size:12px;color:var(--blue);text-decoration:none}.empty{color:var(--muted);padding:35px 10px;text-align:center;border:1px dashed var(--line);border-radius:12px}
+.model-preview{position:relative}.preview-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;background:#ffffffb8}.model-preview-missing{height:190px;display:flex;align-items:center;justify-content:center;padding:8px;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px;color:#5e625a;font-size:12px;text-align:center}.artifact .credit{display:block;color:var(--muted);font-size:10px;margin-top:4px}
+.artifact-disclosure{grid-column:1/-1;border-top:1px solid var(--line);padding-top:10px}.artifact-disclosure summary{display:inline-flex;align-items:center;gap:7px;cursor:pointer;color:var(--blue);font-size:13px;font-weight:700;list-style:none}.artifact-disclosure summary::-webkit-details-marker{display:none}.artifact-disclosure summary::after{content:"⌄";font-size:17px;line-height:1;transition:transform .2s}.artifact-disclosure[open] summary::after{transform:rotate(180deg)}.artifact-disclosure .artifacts{margin-top:12px}
 @media(max-width:900px){.grid{grid-template-columns:1fr}.artifacts{grid-template-columns:1fr 1fr}.hero{align-items:start;flex-direction:column}}@media(max-width:560px){.shell{padding:14px}.artifacts,.checks{grid-template-columns:1fr}.steps{grid-template-columns:1fr 1fr}.hero h1{font-size:25px}}
 </style></head>
 <body><div class="shell">
@@ -482,19 +488,26 @@ async function stopRun(){try{await api('/api/stop',{})}catch(e){alert(e.message)
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function stageIndex(state,arts){const s=state.stage||'';if(s==='foreground_review')return 0;if(s==='geometry_review')return 1;if(s==='unitex_review')return 2;if(s==='oriented_review')return 3;if(s==='complete')return 4;if(arts.some(a=>a.relative.includes('hunyuan/')))return 1;return 0}
 function showRecommendation(r){const box=$('legoRecommendation');if(!r||r.status==='unavailable'){box.hidden=true;return}box.hidden=false;if(r.status==='ready'){box.innerHTML=`Legolization 推荐：<b>${r.target_studs} Stud</b><button type="button" onclick="$('studs').value=${r.target_studs}">使用推荐值</button><br><small>在 ${r.minimum}–${r.maximum} Stud 范围内按模型体素化质量自动选择；不保证最终一定可构建。</small>`}else if(r.status==='calculating'){box.textContent=`正在计算 Legolization 推荐宽度（${r.minimum}–${r.maximum} Stud）……`}else if(r.status==='waiting'){box.textContent='当前任务完成后计算 Legolization 推荐宽度……'}else{box.textContent='推荐宽度计算失败：'+(r.error||'未知错误')}}
+const intermediatePaths=new Set(['input/review.png','hunyuan/qa/shape_qa_overlay.png','unitex/mv_rgb.png','oriented/mesh_upright.glb','oriented/lego_input.ply']);
 function renderArtifacts(arts){
   const signature=JSON.stringify(arts.map(a=>[a.relative,a.size,a.mtime_ns]));
   if(signature===artifactSignature)return;
+  const expanded=$('intermediateArtifacts')?.open||false;
   window.disposeModelPreviews?.();
   artifactSignature=signature;
   const visual=a=>a.kind==='image'
     ?`<img src="${esc(a.url)}&v=${a.mtime_ns}" alt="${esc(a.label)}">`
     :a.preview_format
       ?`<div class="model-preview" data-model-format="${esc(a.preview_format)}" data-model-url="${esc(a.url)}&v=${a.mtime_ns}">等待加载 3D 预览…</div>`
-      :'';
+      :a.relative.endsWith('.mpd')
+        ?'<div class="model-preview-missing">未找到本机 LDraw 零件库；仍可下载 MPD</div>'
+        :'';
+  const card=a=>`<div class="artifact">${visual(a)}<div class="info"><b>${esc(a.label)}</b><a href="${esc(a.url)}" target="_blank" rel="noopener">打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB</a>${a.preview_format==='mpd'?'<span class="credit">零件几何：<a href="https://www.ldraw.org/" target="_blank" rel="noopener">LDraw Parts Library</a></span>':''}</div></div>`;
+  const main=arts.filter(a=>!intermediatePaths.has(a.relative));
+  const intermediate=arts.filter(a=>intermediatePaths.has(a.relative));
   $('artifacts').className=arts.length?'artifacts':'empty';
   $('artifacts').innerHTML=arts.length
-    ?arts.map(a=>`<div class="artifact">${visual(a)}<div class="info"><b>${esc(a.label)}</b><a href="${esc(a.url)}" target="_blank" rel="noopener">打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB</a></div></div>`).join('')
+    ?main.map(card).join('')+(intermediate.length?`<details id="intermediateArtifacts" class="artifact-disclosure" ${expanded?'open':''}><summary>查看中间产物</summary><div class="artifacts">${intermediate.map(card).join('')}</div></details>`:'')
     :'运行后会在这里显示检查图和模型下载链接';
   window.mountModelPreviews?.();
 }
@@ -543,6 +556,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/javascript; charset=utf-8")
             self.send_header("Content-Length", str(path.stat().st_size))
             self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            with path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    self.wfile.write(chunk)
+        elif parsed.path.startswith("/ldraw/"):
+            relative = urllib.parse.unquote(parsed.path.removeprefix("/ldraw/"))
+            path = (LDRAW_ROOT / relative).resolve()
+            if (
+                not path.is_file()
+                or not path.is_relative_to(LDRAW_ROOT.resolve())
+                or path.suffix.lower() not in {".dat", ".ldr", ".png"}
+            ):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            content_type = "image/png" if path.suffix.lower() == ".png" else "text/plain; charset=utf-8"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.send_header("Cache-Control", "private, max-age=3600")
             self.end_headers()
             with path.open("rb") as stream:
                 while chunk := stream.read(1024 * 1024):

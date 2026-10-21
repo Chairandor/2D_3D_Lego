@@ -2,11 +2,34 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
+import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
+import { LDrawConditionalLineMaterial } from 'three/addons/materials/LDrawConditionalLineMaterial.js';
 
 const observed = new Set();
 const views = new Map();
 const gltfLoader = new GLTFLoader();
 const plyLoader = new PLYLoader();
+let legoLoadQueue = Promise.resolve();
+
+async function loadLegoModel(url) {
+  const loader = new LDrawLoader();
+  loader.setPartsLibraryPath('/ldraw/');
+  loader.setConditionalLineMaterial(LDrawConditionalLineMaterial);
+  loader.smoothNormals = false;
+  await loader.preloadMaterials('/ldraw/LDConfig.ldr');
+  const model = await loader.loadAsync(url);
+  model.traverse((part) => {
+    if (part.isLineSegments) part.visible = false;
+  });
+  model.rotation.x = Math.PI;
+  return model;
+}
+
+function queueLegoModel(url) {
+  const task = legoLoadQueue.then(() => loadLegoModel(url));
+  legoLoadQueue = task.catch(() => {});
+  return task;
+}
 
 function releaseModel(model) {
   if (!model) return;
@@ -129,6 +152,10 @@ async function createView(element) {
   };
   views.set(element, view);
   element.replaceChildren(renderer.domElement);
+  const loading = document.createElement('span');
+  loading.className = 'preview-loading';
+  loading.textContent = element.dataset.modelFormat === 'mpd' ? '正在读取 LEGO 零件…' : '正在加载 3D 模型…';
+  element.appendChild(loading);
   view.resizeObserver.observe(element);
   resize(view);
   controls.addEventListener('start', () => {
@@ -152,6 +179,8 @@ async function createView(element) {
         side: THREE.DoubleSide,
         roughness: 0.85,
       }));
+    } else if (element.dataset.modelFormat === 'mpd') {
+      model = await queueLegoModel(element.dataset.modelUrl);
     } else {
       throw new Error('不支持的模型格式');
     }
@@ -162,13 +191,16 @@ async function createView(element) {
     view.model = model;
     scene.add(model);
     fitCamera(view);
+    loading.remove();
     startView(view);
   } catch (error) {
     if (view.disposed) return;
     console.error('3D preview failed', error);
     disposeView(element);
     element.dataset.failed = '1';
-    element.textContent = '3D 预览加载失败，可下载模型查看';
+    element.textContent = element.dataset.modelFormat === 'mpd'
+      ? 'LEGO 预览失败，请检查零件库；仍可下载 MPD'
+      : '3D 预览加载失败，可下载模型查看';
   }
 }
 
