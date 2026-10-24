@@ -154,7 +154,7 @@ async function createView(element) {
   element.replaceChildren(renderer.domElement);
   const loading = document.createElement('span');
   loading.className = 'preview-loading';
-  loading.textContent = element.dataset.modelFormat === 'mpd' ? '正在读取 LEGO 零件…' : '正在加载 3D 模型…';
+  loading.textContent = ['mpd', 'ldr'].includes(element.dataset.modelFormat) ? '正在读取 LEGO 零件…' : '正在加载 3D 模型…';
   element.appendChild(loading);
   view.resizeObserver.observe(element);
   resize(view);
@@ -179,7 +179,7 @@ async function createView(element) {
         side: THREE.DoubleSide,
         roughness: 0.85,
       }));
-    } else if (element.dataset.modelFormat === 'mpd') {
+    } else if (['mpd', 'ldr'].includes(element.dataset.modelFormat)) {
       model = await queueLegoModel(element.dataset.modelUrl);
     } else {
       throw new Error('不支持的模型格式');
@@ -198,8 +198,8 @@ async function createView(element) {
     console.error('3D preview failed', error);
     disposeView(element);
     element.dataset.failed = '1';
-    element.textContent = element.dataset.modelFormat === 'mpd'
-      ? 'LEGO 预览失败，请检查零件库；仍可下载 MPD'
+    element.textContent = ['mpd', 'ldr'].includes(element.dataset.modelFormat)
+      ? 'LEGO 预览失败，请检查零件库；仍可下载模型'
       : '3D 预览加载失败，可下载模型查看';
   }
 }

@@ -1,11 +1,13 @@
 {
   "files": [
+    "ASSISTANT_UI.md",
     "clean_shape_trial.py",
     "colorize_shape_from_image.py",
     "decimate_shape_for_lego.py",
     "download_hunyuan_paint_weights.py",
     "download_paint3d_weights.ps1",
     "hunyuan_native_paint.py",
+    "lego_colour_coherence.py",
     "lego_preprocess.py",
     "lego_refinement.py",
     "lego_scale_recommendation.py",
@@ -40,6 +42,7 @@
     "shape_component_cleanup.py",
     "shape_qa.py",
     "test_colorize_shape_from_image.py",
+    "test_lego_colour_coherence.py",
     "test_lego_preprocess.py",
     "test_lego_refinement.py",
     "test_pipeline_hunyuan_unitex.py",
@@ -47,6 +50,10 @@
     "test_pipeline_ui.py",
     "test_shape_component_cleanup.py",
     "test_shape_qa.py",
+    "test_ui_agent_jobs.py",
+    "ui_agent_jobs.py",
+    "ui_assistant.py",
+    "ui_revisions.py",
     "unitex_tools/inspect_voxelshop_dae_faces.py",
     "unitex_tools/local_connect_proxy.py",
     "unitex_tools/README.md",
@@ -57,7 +64,8 @@
     "unitex_tools/render_flat_mesh_reference.py",
     "unitex_tools/run_geometry_preflight.py",
     "unitex_tools/run_stage1_external.py",
-    "unitex_tools/run_unitex_external.py"
+    "unitex_tools/run_unitex_external.py",
+    "web_assets/model-preview.js"
   ],
   "excluded": [
     "virtual environments",

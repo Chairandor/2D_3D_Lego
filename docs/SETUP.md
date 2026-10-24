@@ -177,6 +177,19 @@ GPU 编号指远端物理 GPU 编号；只有一张卡时应使用 0。UI 中的
 
 打开 `http://127.0.0.1:7865/`，保持启动终端开启。UI 当前一个任务运行时拒绝启动另一个任务，避免把已有任务覆盖。
 
+### 可选：配置阶段助手
+
+主流水线不需要 LLM API。若要在右侧使用对话及图片修改，请自行申请百炼 API Key，在启动 UI 的 Windows 用户环境中设置 `DASHSCOPE_API_KEY`。例如仅对**当前 PowerShell 窗口**生效，可先输入：
+
+```powershell
+$env:DASHSCOPE_API_KEY = Read-Host '输入百炼 API Key'
+.\pipeline_ui.bat
+```
+
+不要把真实 Key 写入 `config.local.json`、README、截图或 Git 提交。`config.local.json` 仅接受 UniTEX 等本地路径配置；助手 Key 由 UI 进程读取环境变量。若使用 Windows 用户环境变量界面设置，设置后要重新打开终端并重启 UI。默认对话模型为 `qwen3.8-max`，也可在 UI 中选 `qwen3.8-flash`；图片编辑默认使用 `qwen-image-2.1-pro`。`DASHSCOPE_BASE_URL`、`DASHSCOPE_IMAGE_MODEL` 仅在明确需要切换百炼兼容端点或图片模型时设置。图片编辑会把选中的图片发送到百炼服务，可能产生 API 费用。
+
+阶段助手生成的是候选，不会直接覆盖原版。选定输入图片后会从输入阶段建立新分支；选定六视图后会复用无色模型和 UniTEX 缓存建立贴图分支。两者都需在卡片上确认并手动运行下一验收点。LEGO 助手能调用的操作与限制见 [阶段助手说明](../ASSISTANT_UI.md)。
+
 ## 5. 初次验收建议
 
 先用自己的简单透明底单主体图片，检查输入、无色几何、六视图、最终彩色模型、方位校正，再批准 LEGO。重复运行同一个输出目录时通常复用既有结果。尝试另一个 LEGO 尺寸只改 Stud 输入，无需重新生成几何或贴图。

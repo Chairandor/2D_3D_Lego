@@ -20,6 +20,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import ui_assistant
+import ui_agent_jobs
+import ui_revisions
 
 from project_config import load_project_config
 
@@ -46,12 +49,104 @@ def default_run_dir(image: Path) -> Path:
     return ROOT / "runs" / f"{image.stem}-hunyuan-unitex"
 
 
+def display_form_values(run_dir: Path | None, image: Path | None) -> tuple[str, str]:
+    """Keep the original upload and top-level folder in the visible form."""
+    if run_dir is None:
+        return (str(image) if image else "", "")
+    main_dir = ui_revisions.root_run_dir(run_dir, ROOT)
+    source = image
+    report = main_dir / "input" / "preprocess.json"
+    try:
+        payload = json.loads(report.read_text(encoding="utf-8"))
+        recorded = Path(payload["source"]).resolve()
+        if recorded.is_file():
+            source = recorded
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return (str(source) if source else "", str(main_dir))
+
+
 def within_root(path: Path) -> bool:
     try:
         path.resolve().relative_to(ROOT.resolve())
         return True
     except ValueError:
         return False
+
+
+def bundle_comparison(run_dir: Path, studs: int, original: Path) -> dict[str, object] | None:
+    """Expose the newest usable bundle report without changing any model files."""
+    prefix = f"lego-{studs}-bundle"
+    bundle_dirs: list[tuple[int, Path]] = []
+    for directory in run_dir.glob(f"{prefix}*"):
+        if not directory.is_dir():
+            continue
+        match = re.fullmatch(rf"{re.escape(prefix)}(?:-(\d+))?", directory.name)
+        if match:
+            bundle_dirs.append((int(match.group(1) or 1), directory))
+    for _, directory in sorted(bundle_dirs, reverse=True):
+        report_path = directory / "comparison" / "report.json"
+        if not report_path.is_file():
+            continue
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(report, dict) or not isinstance(report.get("candidates"), list):
+            continue
+        winner = report.get("winner") if isinstance(report.get("winner"), dict) else {}
+        options: list[dict[str, object]] = [
+            {
+                "label": "原版（当前卡片）",
+                "path": str(original),
+                "url": "/file?path=" + urllib.parse.quote(str(original)),
+                "format": "mpd",
+                "mtime_ns": original.stat().st_mtime_ns,
+                "available": True,
+                "original": True,
+                "winner": False,
+            }
+        ]
+        for candidate in report["candidates"]:
+            if not isinstance(candidate, dict):
+                continue
+            strategy, seed, variant = (candidate.get(key) for key in ("strategy", "seed", "variant"))
+            if (
+                not isinstance(strategy, str)
+                or not re.fullmatch(r"[a-z][a-z0-9-]*", strategy)
+                or not isinstance(seed, int)
+                or seed < 0
+                or not isinstance(variant, str)
+                or not re.fullmatch(r"[a-z][a-z0-9-]*", variant)
+            ):
+                continue
+            key = f"{strategy}-s{seed}-{variant}"
+            path = directory / "work" / "pending" / key / "model.ldr"
+            available = path.is_file()
+            metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
+            options.append(
+                {
+                    "label": f"{strategy} · seed {seed} · {variant}",
+                    "path": str(path) if available else "",
+                    "url": "/file?path=" + urllib.parse.quote(str(path)) if available else "",
+                    "format": "ldr",
+                    "mtime_ns": path.stat().st_mtime_ns if available else 0,
+                    "available": available,
+                    "original": False,
+                    "winner": all(candidate.get(field) == winner.get(field) for field in ("strategy", "seed", "variant")),
+                    "status": candidate.get("status", ""),
+                    "selection_objective": candidate.get("selection_objective"),
+                    "cross_colour_error": candidate.get("cross_colour_error"),
+                    "metrics": {field: metrics.get(field) for field in ("brick_count", "stable", "max_score", "maximin_capacity")},
+                }
+            )
+        return {
+            "bundle": directory.name,
+            "report_mtime_ns": report_path.stat().st_mtime_ns,
+            "reason": str(report.get("reason", "")),
+            "options": options,
+        }
+    return None
 
 
 def artifact_inventory(run_dir: Path | None) -> list[dict[str, object]]:
@@ -91,6 +186,7 @@ def artifact_inventory(run_dir: Path | None) -> list[dict[str, object]]:
     for studs, path in sorted(lego_models):
         item = {
             "label": f"LEGO 模型（{studs} studs）",
+            "studs": studs,
             "relative": path.relative_to(run_dir).as_posix(),
             "kind": "model",
             "size": path.stat().st_size,
@@ -99,7 +195,29 @@ def artifact_inventory(run_dir: Path | None) -> list[dict[str, object]]:
         }
         if ldraw_available:
             item["preview_format"] = "mpd"
+        comparison = bundle_comparison(run_dir, studs, path)
+        if comparison is not None:
+            item["comparison"] = {
+                "bundle": comparison["bundle"],
+                "report_mtime_ns": comparison["report_mtime_ns"],
+            }
+            item["comparison_url"] = "/compare?" + urllib.parse.urlencode(
+                {"run_dir": str(run_dir), "studs": studs}
+            )
         result.append(item)
+    for path in sorted((run_dir / "ui_assistant" / "jobs").glob("*/bundle/model/model.mpd")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(run_dir).as_posix()
+        result.append({
+            "label": "助手生成的 LEGO 模型",
+            "relative": relative,
+            "kind": "model",
+            "size": path.stat().st_size,
+            "mtime_ns": path.stat().st_mtime_ns,
+            "url": "/file?path=" + urllib.parse.quote(str(path)),
+            **({"preview_format": "mpd"} if ldraw_available else {}),
+        })
     legacy = run_dir / "lego" / "model.mpd"
     lego_input = run_dir / "oriented" / "lego_input.ply"
     if legacy.is_file() and (
@@ -119,7 +237,92 @@ def artifact_inventory(run_dir: Path | None) -> list[dict[str, object]]:
     return result
 
 
-def build_command(payload: dict[str, object]) -> tuple[list[str], Path, Path]:
+def artifact_groups(run_dir: Path | None) -> list[dict[str, object]]:
+    if run_dir is None:
+        return []
+    parent = ui_revisions.branch_parent(run_dir, ROOT)
+    branch_stage = ui_revisions.branch_start_stage(run_dir, ROOT)
+    stage_order = {"input": 0, "geometry": 1, "texture": 2, "orientation": 3, "lego": 4}
+    def artifact_stage(relative: str) -> str:
+        if relative.startswith("input/"):
+            return "input"
+        if relative.startswith("hunyuan/"):
+            return "geometry"
+        if relative.startswith("unitex/"):
+            return "texture"
+        if relative.startswith("oriented/"):
+            return "orientation"
+        return "lego"
+    old: dict[str, dict[str, object]] = {}
+    if parent:
+        lineage: list[Path] = []
+        current_parent: Path | None = parent
+        seen: set[Path] = set()
+        while current_parent is not None and current_parent not in seen and len(lineage) < 32:
+            lineage.append(current_parent)
+            seen.add(current_parent)
+            current_parent = ui_revisions.branch_parent(current_parent, ROOT)
+        for ancestor in reversed(lineage):
+            old.update({item["relative"]: item for item in artifact_inventory(ancestor)})
+    current = {item["relative"]: item for item in artifact_inventory(run_dir)}
+    groups = []
+    for relative in dict.fromkeys([*old, *current]):
+        previous, latest = old.get(relative), current.get(relative)
+        record = ui_revisions.selected_pair(run_dir, relative, ROOT)
+        # Accepted inputs are copied into a branch at runtime. The local copy
+        # is the selected version, not another pending candidate.
+        accepted_branch_input = (
+            (branch_stage == "texture" and relative == "unitex/mv_rgb.png")
+            or (branch_stage == "input" and relative == "input/foreground.png")
+        )
+        # Orientation and LEGO input rebuilt after a UniTEX edit are derived
+        # intermediates. Show the fresh result directly; only an explicit
+        # upload/assistant edit of either artifact needs a comparison.
+        auto_accepted_intermediate = (
+            branch_stage == "texture"
+            and relative in {"oriented/mesh_upright.glb", "oriented/lego_input.ply"}
+        )
+        skip_generated_pair = accepted_branch_input or auto_accepted_intermediate
+        if skip_generated_pair and latest and record and record.get("origin") == "generated":
+            record = None
+        if previous and latest and ui_revisions.stage_for(relative):
+            if not skip_generated_pair:
+                record = ui_revisions.register_generated_pair(
+                    run_dir, relative,
+                    ui_revisions.available_artifact(parent, relative, ROOT),
+                    run_dir / relative, ROOT,
+                )
+        if record:
+            template = latest or previous
+            assert template is not None
+            def version_item(path_text: str) -> dict[str, object]:
+                path = Path(path_text)
+                item = dict(template)
+                item["url"] = "/file?path=" + urllib.parse.quote(str(path))
+                item["size"] = path.stat().st_size
+                item["mtime_ns"] = path.stat().st_mtime_ns
+                item.pop("comparison", None)
+                item.pop("comparison_url", None)
+                return item
+            groups.append({
+                "relative": relative, "stage": ui_revisions.stage_for(relative),
+                "original": version_item(str(record["original"])),
+                "candidate": version_item(str(record["candidate"])),
+                "choice": record["choice"], "stale": False,
+            })
+        else:
+            groups.append({
+                "relative": relative, "stage": ui_revisions.stage_for(relative),
+                "original": latest or previous, "candidate": None, "choice": None,
+                "stale": bool(previous and not latest and branch_stage is not None
+                              and stage_order[artifact_stage(relative)] >= stage_order[branch_stage]),
+            })
+    return groups
+
+
+def build_command(
+    payload: dict[str, object], *, active_run_dir: Path | None = None
+) -> tuple[list[str], Path, Path]:
     image_text = str(payload.get("image_path", "")).strip()
     if not image_text:
         raise ValueError("请先选择或填写输入图片")
@@ -131,7 +334,35 @@ def build_command(payload: dict[str, object]) -> tuple[list[str], Path, Path]:
     if not within_root(run_dir):
         raise ValueError(f"输出目录必须位于项目目录内：{ROOT}")
 
+    # The form always shows the original input and top-level folder. Resume
+    # an adopted internal branch only when those two visible values still
+    # match; changing either field starts a new top-level run as usual.
+    if active_run_dir is not None:
+        active_run_dir = active_run_dir.resolve()
+        if ui_revisions.branch_parent(active_run_dir, ROOT) is not None:
+            display_image, display_dir = display_form_values(active_run_dir, image)
+            if image == Path(display_image) and run_dir == Path(display_dir):
+                run_dir = active_run_dir
+                texture = ui_revisions.branch_settings(run_dir, ROOT)
+                if texture is not None:
+                    image = Path(texture["source_image"])
+                else:
+                    branch_image = ui_revisions.branch_source_image(run_dir, ROOT)
+                    if branch_image is None:
+                        raise ValueError("修改分支缺少已确认的输入图片")
+                    image = branch_image
+
     command = [sys.executable, str(PIPELINE), str(image), "--output-dir", str(run_dir)]
+    texture_branch = ui_revisions.branch_settings(run_dir, ROOT)
+    if texture_branch is not None:
+        if image != Path(texture_branch["source_image"]):
+            raise ValueError("六视图分支必须使用其原始透明底图片")
+        command.extend([
+            "--preprocess-mode", "off",
+            "--from-shape", texture_branch["from_shape"],
+            "--unitex-six-view", texture_branch["six_view"],
+            "--unitex-cache-run-dir", texture_branch["unitex_cache_run_dir"],
+        ])
     if payload.get("accept_preprocess"):
         command.append("--accept-preprocess")
     if payload.get("accept_geometry"):
@@ -183,7 +414,9 @@ class PipelineController:
         self.recommendation_error: dict[Path, str] = {}
 
     def start(self, payload: dict[str, object]) -> None:
-        command, image, run_dir = build_command(payload)
+        with self.lock:
+            active_run_dir = self.run_dir
+        command, image, run_dir = build_command(payload, active_run_dir=active_run_dir)
         with self.lock:
             if self.process is not None and self.process.poll() is None:
                 raise RuntimeError("流水线正在运行，请等待或先停止当前任务")
@@ -283,6 +516,17 @@ class PipelineController:
         if process is not None:
             self._terminate(process)
 
+    def activate_branch(self, branch: Path, image: Path) -> None:
+        with self.lock:
+            if self.process is not None and self.process.poll() is None:
+                raise RuntimeError("流水线正在运行，不能切换到修改版")
+            self.run_dir = branch
+            self.image = image
+            self.message = "已采用修改版，等待运行到下一验收点"
+            self.returncode = None
+            self.logs.clear()
+            self.started_at = None
+
     def status(self) -> dict[str, object]:
         with self.lock:
             running = self.process is not None and self.process.poll() is None
@@ -343,7 +587,12 @@ class PipelineController:
                 "elapsed": round(time.time() - self.started_at, 1) if self.started_at else 0,
                 "notices": notices,
             }
+        display_image, display_dir = display_form_values(run_dir, self.image)
+        data["display_image"] = display_image
+        data["display_output_dir"] = display_dir
         data["artifacts"] = artifact_inventory(run_dir)
+        data["artifact_groups"] = artifact_groups(run_dir)
+        data["assistant_available"] = bool(os.environ.get("DASHSCOPE_API_KEY"))
         data["lego_recommendation"] = self.lego_recommendation(run_dir, running)
         state = run_dir / "pipeline_state.json" if run_dir else None
         if state and state.is_file():
@@ -433,6 +682,7 @@ class PipelineController:
 
 
 CONTROLLER = PipelineController()
+ASSISTANT_JOBS = ui_agent_jobs.AgentJobManager(ROOT, LEGO_ROOT / ".venv" / "Scripts" / "legolization.exe", LEGO_ROOT, LDRAW_ROOT)
 
 
 HTML = r"""<!doctype html>
@@ -449,10 +699,16 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
 .checks{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:15px 0}.check{display:flex;gap:8px;align-items:flex-start;background:#f3f0e7;border:1px solid #dfd9ca;border-radius:10px;padding:9px;font-size:13px}.check input{margin-top:2px}
 .actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:15px}button{border:0;border-radius:11px;padding:11px 14px;font:inherit;font-weight:750;cursor:pointer;background:#e6e1d4;color:var(--ink)}button.primary{background:var(--yellow)}button.danger{background:#f3d4cf;color:#852c20}button:hover{filter:brightness(.97)}button:disabled{opacity:.5;cursor:not-allowed}
 .hint{color:var(--muted);font-size:12px;line-height:1.55}.recommendation{margin-top:8px;padding:10px 11px;border:1px solid #cbd8c7;border-radius:10px;background:#edf5e9;color:#31593d;font-size:13px;line-height:1.45}.recommendation button{padding:5px 9px;margin-left:7px;background:#d5e8cf}.steps{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-bottom:16px}.step{font-size:12px;padding:9px 7px;border-radius:9px;text-align:center;background:#ece8dd;color:#73766c}.step.active{background:#dfeade;color:#285a3f;font-weight:750}.step.wait{background:#f4e5b2;color:#755b00;font-weight:750}.notices{display:grid;gap:8px;margin:10px 0}.notice{border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.5}.notice.warning{background:#fff1c7;color:#715300;border:1px solid #e2c56c}.notice.error{background:#f7d7d2;color:#842f23;border:1px solid #dc9d94}
-.log{height:310px;overflow:auto;white-space:pre-wrap;background:#20231f;color:#dce8d5;border-radius:13px;padding:14px;font:12px/1.5 Consolas,monospace}.meta{display:flex;flex-wrap:wrap;gap:8px;color:var(--muted);font-size:12px;margin:10px 0}.meta span{background:#f0ede5;padding:5px 8px;border-radius:7px}.artifacts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}.artifact{border:1px solid var(--line);border-radius:13px;overflow:hidden;background:white}.artifact img{display:block;width:100%;height:190px;object-fit:contain;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px}.model-preview{height:190px;display:flex;align-items:center;justify-content:center;padding:8px;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px;color:#5e625a;font-size:12px;text-align:center;touch-action:none}.model-preview canvas{display:block;width:100%;height:100%;cursor:grab}.model-preview canvas:active{cursor:grabbing}.artifact .info{padding:10px}.artifact b{display:block;font-size:13px}.artifact a{font-size:12px;color:var(--blue);text-decoration:none}.empty{color:var(--muted);padding:35px 10px;text-align:center;border:1px dashed var(--line);border-radius:12px}
+.log{height:310px;overflow:auto;white-space:pre-wrap;background:#20231f;color:#dce8d5;border-radius:13px;padding:14px;font:12px/1.5 Consolas,monospace}.meta{display:flex;flex-wrap:wrap;gap:8px;color:var(--muted);font-size:12px;margin:10px 0}.meta span{background:#f0ede5;padding:5px 8px;border-radius:7px}.artifacts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}.artifact{border:1px solid var(--line);border-radius:13px;overflow:hidden;background:white}.artifact img{display:block;width:100%;height:190px;object-fit:contain;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px}.model-preview{height:190px;display:flex;align-items:center;justify-content:center;padding:8px;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px;color:#5e625a;font-size:12px;text-align:center;touch-action:none}.model-preview canvas{display:block;width:100%;height:100%;cursor:grab}.model-preview canvas:active{cursor:grabbing}.artifact .info{padding:10px;display:flex;flex-direction:column;align-items:flex-start;gap:4px}.artifact b{display:block;font-size:13px}.artifact a{font-size:12px;color:var(--blue);text-decoration:none}.empty{color:var(--muted);padding:35px 10px;text-align:center;border:1px dashed var(--line);border-radius:12px}
 .model-preview{position:relative}.preview-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;background:#ffffffb8}.model-preview-missing{height:190px;display:flex;align-items:center;justify-content:center;padding:8px;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px;color:#5e625a;font-size:12px;text-align:center}.artifact .credit{display:block;color:var(--muted);font-size:10px;margin-top:4px}
 .artifact-disclosure{grid-column:1/-1;border-top:1px solid var(--line);padding-top:10px}.artifact-disclosure summary{display:inline-flex;align-items:center;gap:7px;cursor:pointer;color:var(--blue);font-size:13px;font-weight:700;list-style:none}.artifact-disclosure summary::-webkit-details-marker{display:none}.artifact-disclosure summary::after{content:"⌄";font-size:17px;line-height:1;transition:transform .2s}.artifact-disclosure[open] summary::after{transform:rotate(180deg)}.artifact-disclosure .artifacts{margin-top:12px}
+.artifact .title-link{display:block;color:var(--blue);font-size:13px;font-weight:700;text-decoration:underline;text-underline-offset:2px}
+.assistant-launch{position:fixed;right:18px;bottom:18px;z-index:20;background:#293b38;color:white;box-shadow:0 8px 28px #0003}.assistant-panel{position:fixed;right:0;top:0;bottom:0;width:390px;max-width:100vw;z-index:30;background:#fbfaf6;border-left:1px solid var(--line);box-shadow:-12px 0 35px #0002;display:flex;flex-direction:column}.assistant-panel[hidden],.assistant-launch[hidden],.picker[hidden]{display:none}.assistant-head{display:flex;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid var(--line)}.assistant-head h2{margin:0;font-size:17px}.assistant-head button{padding:7px 10px}.chat-history{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:10px}.chat-line{max-width:95%;padding:10px 12px;border-radius:12px;background:#ece9df;white-space:pre-wrap;line-height:1.5;font-size:13px}.chat-line.user{align-self:flex-end;background:#dceadc}.chat-compose{position:relative;border-top:1px solid var(--line);padding:12px}.chat-compose textarea{width:100%;min-height:78px;resize:vertical;border:1px solid var(--line);border-radius:11px;padding:10px;font:inherit}.chat-actions{display:flex;gap:8px;justify-content:space-between;margin-top:7px}.chat-actions button{font-size:12px;padding:8px 11px}.picker{position:absolute;left:12px;right:12px;bottom:115px;max-height:min(65vh,500px);overflow:auto;background:#292a29;color:#f7f7f5;border:1px solid #555;border-radius:15px;box-shadow:0 12px 30px #0005;padding:10px;z-index:2}.picker-title{font-size:12px;color:#aaa;padding:8px 10px 4px}.picker-option{display:flex;justify-content:space-between;align-items:center;width:100%;text-align:left;color:inherit;background:transparent;font-weight:500;padding:10px;border-radius:8px}.picker-option:hover,.picker-option[aria-checked=true]{background:#414541}.picker-option[aria-checked=true]::after{content:'✓'}.picker-divider{height:1px;background:#555;margin:8px 4px}.artifact-pair{grid-column:span 2;border:2px solid #b3c8b2;border-radius:16px;padding:10px;background:#edf4eb}.artifact-pair .pair-title{font-size:12px;color:#42644d;font-weight:750;margin:0 0 8px}.pair-cards{display:grid;grid-template-columns:1fr 1fr;gap:10px}.artifact.choice-card{cursor:pointer;border-color:#aec3ae}.artifact.choice-card:hover{box-shadow:0 0 0 2px #a8c6a7}.version-tag{display:inline-block;font-size:11px;color:#42644d;background:#e5f1e1;border-radius:6px;padding:3px 6px;margin-bottom:5px}.stale-tag{color:#765f21;background:#fff0bf}.choice-confirm{display:flex;gap:6px;align-items:center;margin-top:8px;font-size:12px;flex-wrap:wrap}.choice-confirm button{padding:5px 9px;font-size:12px}.artifact-actions{display:flex;align-items:center;flex-wrap:wrap;width:100%;min-width:0;gap:5px}.artifact-actions>a{white-space:nowrap}.artifact .upload-revision{flex:none;margin-left:auto;padding:3px 5px;font-size:10px;line-height:1.1;border-radius:6px;background:#e9e6db;white-space:nowrap}.assistant-open .shell{margin-right:390px;max-width:none}
+.artifact-actions{justify-content:space-between}.artifact .upload-revision{margin-left:0}
+.artifact.choice-card{position:relative}.choice-confirm{position:absolute;inset:0;z-index:5;margin:0;padding:16px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;border-radius:12px;background:rgba(245,248,242,.76);-webkit-backdrop-filter:blur(6px) saturate(.75);backdrop-filter:blur(6px) saturate(.75);box-shadow:inset 0 0 0 1px rgba(70,110,78,.2);text-align:center;animation:choice-fog-in .18s ease-out}.choice-prompt{font-size:14px;font-weight:750;line-height:1.5;color:#233d2c;text-shadow:0 1px 3px #fff}.choice-options{display:flex;gap:9px;justify-content:center}.choice-options button{min-width:54px;padding:7px 13px;border-radius:999px;font-size:12px;box-shadow:0 2px 8px #263a2a1f}.choice-options [data-confirm=yes]{background:#397a58;color:white}.choice-options [data-confirm=no]{background:#fff;color:#47584b;border:1px solid #b9cabb}@keyframes choice-fog-in{from{opacity:0}to{opacity:1}}@media(prefers-reduced-motion:reduce){.choice-confirm{animation:none}}
+.artifact{position:relative}.artifact.choice-card>.version-tag{position:absolute;top:10px;right:10px;z-index:2;margin:0;padding:5px 8px;border:1px solid #b8d8bb;border-radius:999px;background:rgba(230,246,231,.92);box-shadow:0 2px 8px #17342122;pointer-events:none}.artifact>.stale-tag{position:absolute;top:10px;right:10px;z-index:2;margin:0;padding:5px 8px;border:1px solid #e3c96f;border-radius:999px;color:#765f21;background:rgba(255,240,191,.94);box-shadow:0 2px 8px #43350c22;pointer-events:none;font-size:11px;line-height:normal}
 @media(max-width:900px){.grid{grid-template-columns:1fr}.artifacts{grid-template-columns:1fr 1fr}.hero{align-items:start;flex-direction:column}}@media(max-width:560px){.shell{padding:14px}.artifacts,.checks{grid-template-columns:1fr}.steps{grid-template-columns:1fr 1fr}.hero h1{font-size:25px}}
+@media(max-width:1100px){.assistant-open .shell{margin-right:0}.assistant-panel{width:min(390px,100vw)}}@media(max-width:560px){.artifact-pair{grid-column:1}.pair-cards{grid-template-columns:1fr}}
 </style></head>
 <body><div class="shell">
 <div class="hero"><div><h1>2D → Hunyuan → UniTEX → LEGO</h1><p>本地实验控制台 · 阶段验收 · 断点续跑</p></div><div id="badge" class="badge">就绪</div></div>
@@ -477,10 +733,29 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
 <div class="meta"><span id="runDir">尚未运行</span><span id="elapsed">0 秒</span></div><div id="notices" class="notices"></div><div id="log" class="log">等待任务……</div>
 <h2 style="margin-top:18px">产物与预览</h2><div id="artifacts" class="empty">运行后会在这里显示检查图和模型下载链接</div>
 </section></div></div>
+<button id="assistantLaunch" class="assistant-launch" onclick="toggleAssistant(true)">打开阶段助手</button>
+<aside id="assistantPanel" class="assistant-panel" hidden aria-label="阶段助手">
+  <div class="assistant-head"><h2>阶段助手</h2><button onclick="toggleAssistant(false)" aria-label="收起助手">收起 ×</button></div>
+  <div id="chatHistory" class="chat-history"><div class="chat-line">选择阶段或对话模型，然后描述想检查或修改的内容。修改会先生成候选，原版不会覆盖。</div></div>
+  <div class="chat-compose"><textarea id="chatInput" placeholder="描述你想调整的地方……"></textarea>
+    <div id="modelPicker" class="picker" role="menu" hidden>
+      <div class="picker-title">按阶段 · 自动选择对话模型</div>
+      <button class="picker-option" role="menuitemradio" data-mode="stage" data-value="input" onclick="selectAssistant(this)">输入图片与抠图</button>
+      <button class="picker-option" role="menuitemradio" data-mode="stage" data-value="geometry" onclick="selectAssistant(this)">3D 几何</button>
+      <button class="picker-option" role="menuitemradio" data-mode="stage" data-value="texture" onclick="selectAssistant(this)">六视图与着色</button>
+      <button class="picker-option" role="menuitemradio" data-mode="stage" data-value="orientation" onclick="selectAssistant(this)">方位校正</button>
+      <button class="picker-option" role="menuitemradio" data-mode="stage" data-value="lego" onclick="selectAssistant(this)">LEGO 拼搭</button>
+      <div class="picker-divider"></div><div class="picker-title">直接选对话模型 · 不指定阶段</div>
+      <button class="picker-option" role="menuitemradio" data-mode="model" data-value="qwen3.8-max" onclick="selectAssistant(this)">Qwen3.8 Max</button>
+      <button class="picker-option" role="menuitemradio" data-mode="model" data-value="qwen3.8-flash" onclick="selectAssistant(this)">Qwen3.8 Flash</button>
+    </div>
+    <div class="chat-actions"><button id="selectionButton" onclick="togglePicker()" aria-haspopup="menu" aria-expanded="false">Qwen3.8 Max ▾</button><button id="stopAssistantJob" type="button" hidden onclick="stopAssistantJob()">停止任务</button><button id="sendChat" class="primary" onclick="sendChat()">发送 ↑</button></div>
+  </div>
+</aside><input id="revisionFile" type="file" hidden onchange="uploadRevision(this)">
 <script type="importmap">{"imports":{"three":"/static/three/three.module.js","three/addons/":"/static/three/addons/"}}</script>
 <script type="module" src="/static/model-preview.js"></script>
 <script>
-const $=id=>document.getElementById(id); let polling=false, artifactSignature=null;
+const $=id=>document.getElementById(id); let polling=false, artifactSignature=null, currentRunDir='', formInitialized=false, assistantSelection={mode:'model',value:'qwen3.8-max'}, chatTurns=[], pendingChoice=null, revisionRelative='', pointerStart=null, assistantJobId='', assistantJobLine=null;
 async function api(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});const d=await r.json();if(!r.ok)throw new Error(d.error||'请求失败');return d}
 async function uploadFile(input){if(!input.files.length)return;const f=input.files[0];const reader=new FileReader();reader.onload=async()=>{try{const d=await api('/api/upload',{name:f.name,data:reader.result.split(',')[1]});$('imagePath').value=d.path;$('outputDir').value=d.output_dir}catch(e){alert(e.message)}};reader.readAsDataURL(f)}
 async function startRun(){try{await api('/api/start',{image_path:$('imagePath').value,output_dir:$('outputDir').value,accept_preprocess:$('acceptPre').checked,accept_geometry:$('acceptGeo').checked,accept_unitex:$('acceptTex').checked,build_lego:$('buildLego').checked,bundle:$('bundle').checked,force:$('force').checked,projection:$('projection').value,unitex_gpu:$('unitexGpu').value,target_studs:$('studs').value});polling=true;refresh()}catch(e){alert(e.message)}}
@@ -489,8 +764,8 @@ function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 function stageIndex(state,arts){const s=state.stage||'';if(s==='foreground_review')return 0;if(s==='geometry_review')return 1;if(s==='unitex_review')return 2;if(s==='oriented_review')return 3;if(s==='complete')return 4;if(arts.some(a=>a.relative.includes('hunyuan/')))return 1;return 0}
 function showRecommendation(r){const box=$('legoRecommendation');if(!r||r.status==='unavailable'){box.hidden=true;return}box.hidden=false;if(r.status==='ready'){box.innerHTML=`Legolization 推荐：<b>${r.target_studs} Stud</b><button type="button" onclick="$('studs').value=${r.target_studs}">使用推荐值</button><br><small>在 ${r.minimum}–${r.maximum} Stud 范围内按模型体素化质量自动选择；不保证最终一定可构建。</small>`}else if(r.status==='calculating'){box.textContent=`正在计算 Legolization 推荐宽度（${r.minimum}–${r.maximum} Stud）……`}else if(r.status==='waiting'){box.textContent='当前任务完成后计算 Legolization 推荐宽度……'}else{box.textContent='推荐宽度计算失败：'+(r.error||'未知错误')}}
 const intermediatePaths=new Set(['input/review.png','hunyuan/qa/shape_qa_overlay.png','unitex/mv_rgb.png','oriented/mesh_upright.glb','oriented/lego_input.ply']);
-function renderArtifacts(arts){
-  const signature=JSON.stringify(arts.map(a=>[a.relative,a.size,a.mtime_ns]));
+function renderArtifacts(groups){
+  const signature=JSON.stringify(groups.map(g=>[g.relative,g.original?.mtime_ns,g.candidate?.mtime_ns,g.choice,g.stale,g.original?.comparison?.bundle]));
   if(signature===artifactSignature)return;
   const expanded=$('intermediateArtifacts')?.open||false;
   window.disposeModelPreviews?.();
@@ -502,16 +777,30 @@ function renderArtifacts(arts){
       :a.relative.endsWith('.mpd')
         ?'<div class="model-preview-missing">未找到本机 LDraw 零件库；仍可下载 MPD</div>'
         :'';
-  const card=a=>`<div class="artifact">${visual(a)}<div class="info"><b>${esc(a.label)}</b><a href="${esc(a.url)}" target="_blank" rel="noopener">打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB</a>${a.preview_format==='mpd'?'<span class="credit">零件几何：<a href="https://www.ldraw.org/" target="_blank" rel="noopener">LDraw Parts Library</a></span>':''}</div></div>`;
-  const main=arts.filter(a=>!intermediatePaths.has(a.relative));
-  const intermediate=arts.filter(a=>intermediatePaths.has(a.relative));
-  $('artifacts').className=arts.length?'artifacts':'empty';
-  $('artifacts').innerHTML=arts.length
-    ?main.map(card).join('')+(intermediate.length?`<details id="intermediateArtifacts" class="artifact-disclosure" ${expanded?'open':''}><summary>查看中间产物</summary><div class="artifacts">${intermediate.map(card).join('')}</div></details>`:'')
+  const artifactPath=a=>new URL(a.url,location.href).searchParams.get('path')||a.relative;
+  const card=(a,g,version,selectable=false)=>`<div class="artifact ${selectable?'choice-card':''}" ${selectable?`data-relative="${esc(g.relative)}" data-version="${version}"`:''}>${visual(a)}${selectable?`<span class="version-tag">${version==='original'?'原版':'修改版'}</span>`:''}${g.stale?'<span class="stale-tag">旧结果</span>':''}<div class="info">${a.comparison_url?`<a class="title-link" href="${esc(a.comparison_url)}" target="_blank" rel="noopener" title="${esc(artifactPath(a))}">${esc(a.label)}</a>`:`<b title="${esc(artifactPath(a))}">${esc(a.label)}</b>`}${a.preview_format==='mpd'?'<span class="credit">零件几何：<a href="https://www.ldraw.org/" target="_blank" rel="noopener">LDraw Parts Library</a></span>':''}<div class="artifact-actions"><a href="${esc(a.url)}" target="_blank" rel="noopener" title="打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB">打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB</a>${g.stage&&!g.stale?`<button class="upload-revision" type="button" data-upload="${esc(g.relative)}">上传修改版</button>`:''}</div>${selectable&&pendingChoice?.relative===g.relative&&pendingChoice?.version===version?`<div class="choice-confirm" role="group" aria-label="确认选择这版卡片"><div class="choice-prompt">确认选这版吗？</div><div class="choice-options"><button data-confirm="yes">是</button><button data-confirm="no">否</button></div></div>`:''}</div></div>`;
+  const group=g=>g.candidate&&!g.choice?`<div class="artifact-pair"><div class="pair-title">${esc(g.original.label)} · 选择一版</div><div class="pair-cards">${card(g.original,g,'original',true)}${card(g.candidate,g,'candidate',true)}</div></div>`:card(g.choice==='candidate'?g.candidate:g.original,g,g.choice||'',false);
+  const main=groups.filter(g=>!intermediatePaths.has(g.relative));
+  const intermediate=groups.filter(g=>intermediatePaths.has(g.relative));
+  $('artifacts').className=groups.length?'artifacts':'empty';
+  $('artifacts').innerHTML=groups.length
+    ?main.map(group).join('')+(intermediate.length?`<details id="intermediateArtifacts" class="artifact-disclosure" ${expanded?'open':''}><summary>查看中间产物</summary><div class="artifacts">${intermediate.map(group).join('')}</div></details>`:'')
     :'运行后会在这里显示检查图和模型下载链接';
   window.mountModelPreviews?.();
 }
-async function refresh(){try{const r=await fetch('/api/status');const d=await r.json();$('badge').textContent=d.message+(d.running?' · '+d.elapsed+'s':'');$('runButton').disabled=d.running;showRecommendation(d.lego_recommendation);const notices=d.notices||[];$('notices').innerHTML=notices.map(n=>`<div class="notice ${n.level==='error'?'error':'warning'}">${esc(n.text)}</div>`).join('');$('log').textContent=d.logs||'等待任务……';$('log').scrollTop=$('log').scrollHeight;$('runDir').textContent=d.run_dir||'尚未运行';$('elapsed').textContent=d.elapsed+' 秒';const idx=stageIndex(d.pipeline_state||{},d.artifacts||[]);[...$('steps').children].forEach((e,i)=>{e.className='step '+(i<idx?'active':'')+(i===idx?'wait':'')});renderArtifacts(d.artifacts||[]);polling=!!d.running;if(d.running)setTimeout(refresh,1200)}catch(e){polling=false;$('badge').textContent='连接失败'}}
+function toggleAssistant(open){$('assistantPanel').hidden=!open;$('assistantLaunch').hidden=open;document.body.classList.toggle('assistant-open',open)}
+function togglePicker(){const p=$('modelPicker');p.hidden=!p.hidden;$('selectionButton').setAttribute('aria-expanded',String(!p.hidden))}
+function selectAssistant(button){assistantSelection={mode:button.dataset.mode,value:button.dataset.value};$('selectionButton').textContent=button.textContent.trim()+' ▾';$('modelPicker').hidden=true;$('selectionButton').setAttribute('aria-expanded','false');document.querySelectorAll('.picker-option').forEach(b=>b.setAttribute('aria-checked',String(b===button)))}
+document.querySelector('.picker-option[data-value="qwen3.8-max"]').setAttribute('aria-checked','true');
+function chatLine(role,text){const el=document.createElement('div');el.className='chat-line '+role;el.textContent=text;$('chatHistory').append(el);$('chatHistory').scrollTop=$('chatHistory').scrollHeight;return el}
+async function sendChat(){const message=$('chatInput').value.trim();if(!message)return;$('chatInput').value='';chatLine('user',message);const wait=chatLine('assistant','思考中……');$('sendChat').disabled=true;try{const d=await api('/api/assistant/chat',{run_dir:currentRunDir,mode:assistantSelection.mode,value:assistantSelection.value,message,history:chatTurns});wait.textContent=d.answer;chatTurns.push({role:'user',content:message},{role:'assistant',content:d.answer});if(d.job){assistantJobId=d.job.id;assistantJobLine=chatLine('assistant','任务已排队……');$('stopAssistantJob').hidden=false;pollAssistantJob()}}catch(e){wait.textContent=e.message}finally{$('sendChat').disabled=false}}
+async function pollAssistantJob(){if(!assistantJobId)return;try{const r=await fetch('/api/assistant/job');const d=await r.json();if(d.id!==assistantJobId)return;if(assistantJobLine)assistantJobLine.textContent=d.summary||d.state;if(['queued','running'].includes(d.state)){setTimeout(pollAssistantJob,2000)}else{$('stopAssistantJob').hidden=true;assistantJobId='';artifactSignature=null;refresh();if(d.result_path&&assistantJobLine){const a=document.createElement('a');a.href='/file?path='+encodeURIComponent(d.result_path);a.target='_blank';a.rel='noopener';a.textContent=' 打开结果';assistantJobLine.append(a)}}}catch(e){if(assistantJobLine)assistantJobLine.textContent='任务状态读取失败：'+e.message;$('stopAssistantJob').hidden=true;assistantJobId=''}}
+async function stopAssistantJob(){try{await api('/api/assistant/stop',{})}catch(e){alert(e.message)}}
+function openRevisionUpload(relative){revisionRelative=relative;const f=$('revisionFile');f.accept='.'+relative.split('.').pop();f.value='';f.click()}
+async function uploadRevision(input){const f=input.files[0];if(!f)return;try{const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]);r.onerror=reject;r.readAsDataURL(f)});await api('/api/revision/upload',{run_dir:currentRunDir,relative:revisionRelative,name:f.name,data});artifactSignature=null;refresh()}catch(e){alert(e.message)}}
+$('artifacts').addEventListener('pointerdown',e=>{pointerStart={x:e.clientX,y:e.clientY}});
+$('artifacts').addEventListener('click',async e=>{const upload=e.target.closest('[data-upload]');if(upload){openRevisionUpload(upload.dataset.upload);return}const confirm=e.target.closest('[data-confirm]');if(confirm){const choice=pendingChoice;if(!choice)return;if(confirm.dataset.confirm==='no'){pendingChoice=null;artifactSignature=null;refresh();return}try{await api('/api/revision/choose',{run_dir:currentRunDir,relative:choice.relative,choice:choice.version});pendingChoice=null;artifactSignature=null;refresh()}catch(err){alert(err.message)}return}if(e.target.closest('a,button'))return;const card=e.target.closest('.choice-card');if(!card)return;if(pointerStart&&Math.hypot(e.clientX-pointerStart.x,e.clientY-pointerStart.y)>6)return;pendingChoice={relative:card.dataset.relative,version:card.dataset.version};artifactSignature=null;refresh()});
+async function refresh(){try{const r=await fetch('/api/status');const d=await r.json();currentRunDir=d.run_dir||'';if(!formInitialized){if(d.display_image)$('imagePath').value=d.display_image;if(d.display_output_dir)$('outputDir').value=d.display_output_dir;formInitialized=true}$('badge').textContent=d.message+(d.running?' · '+d.elapsed+'s':'');$('runButton').disabled=d.running;showRecommendation(d.lego_recommendation);const notices=d.notices||[];$('notices').innerHTML=notices.map(n=>`<div class="notice ${n.level==='error'?'error':'warning'}">${esc(n.text)}</div>`).join('');$('log').textContent=d.logs||'等待任务……';$('log').scrollTop=$('log').scrollHeight;$('runDir').textContent=d.display_output_dir||'尚未运行';$('elapsed').textContent=d.elapsed+' 秒';const idx=stageIndex(d.pipeline_state||{},d.artifacts||[]);[...$('steps').children].forEach((e,i)=>{e.className='step '+(i<idx?'active':'')+(i===idx?'wait':'')});renderArtifacts(d.artifact_groups||[]);polling=!!d.running;if(d.running)setTimeout(refresh,1200)}catch(e){polling=false;$('badge').textContent='连接失败'}}
 refresh();setInterval(()=>{if(!polling)refresh()},5000);
 </script></body></html>"""
 
@@ -539,14 +828,48 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/":
-            body = HTML.replace("__DEFAULT_IMAGE__", html.escape(str(DEFAULT_IMAGE), quote=True)).encode("utf-8")
+            default_image = str(DEFAULT_IMAGE) if DEFAULT_IMAGE.is_file() else ""
+            body = HTML.replace("__DEFAULT_IMAGE__", html.escape(default_image, quote=True)).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif parsed.path == "/compare":
+            path = STATIC_ROOT / "comparison.html"
+            body = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(body)
         elif parsed.path == "/api/status":
             self.send_json(CONTROLLER.status())
+        elif parsed.path == "/api/assistant/job":
+            self.send_json(ASSISTANT_JOBS.status() or {"state": "idle"})
+        elif parsed.path == "/api/comparison":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                run_dir = Path(query["run_dir"][0]).resolve()
+                studs = int(query["studs"][0])
+            except (KeyError, IndexError, ValueError):
+                self.send_json({"error": "缺少有效的运行目录或 Stud 尺寸"}, status=400)
+                return
+            if not within_root(run_dir) or not run_dir.is_dir() or studs < 1 or studs > 10000:
+                self.send_json({"error": "无效的运行目录或 Stud 尺寸"}, status=400)
+                return
+            original = run_dir / f"lego-{studs}" / "model.mpd"
+            comparison = bundle_comparison(run_dir, studs, original) if original.is_file() else None
+            if comparison is None:
+                self.send_json({"error": "此尺寸尚无可用的 Bundle 比较报告"}, status=404)
+                return
+            self.send_json({
+                "studs": studs,
+                "run_dir": str(run_dir),
+                "ldraw_available": (LDRAW_ROOT / "parts").is_dir() and (LDRAW_ROOT / "LDConfig.ldr").is_file(),
+                "comparison": comparison,
+            })
         elif parsed.path.startswith("/static/"):
             path = (STATIC_ROOT / parsed.path.removeprefix("/static/")).resolve()
             if not path.is_file() or path.suffix != ".js" or not path.is_relative_to(STATIC_ROOT.resolve()):
@@ -606,6 +929,9 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/stop":
                 CONTROLLER.stop()
                 self.send_json({"ok": True})
+            elif self.path == "/api/assistant/stop":
+                ASSISTANT_JOBS.stop()
+                self.send_json({"ok": True})
             elif self.path == "/api/upload":
                 raw = base64.b64decode(str(data.get("data", "")), validate=True)
                 if not raw:
@@ -615,6 +941,75 @@ class Handler(BaseHTTPRequestHandler):
                 path = UPLOADS / f"{stamp}-{safe_name(str(data.get('name', 'upload.png')))}"
                 path.write_bytes(raw)
                 self.send_json({"path": str(path), "output_dir": str(default_run_dir(path))})
+            elif self.path == "/api/revision/upload":
+                run_dir = Path(str(data.get("run_dir", ""))).resolve()
+                if not run_dir.is_dir() or not within_root(run_dir):
+                    raise ValueError("无效的运行目录")
+                relative = str(data.get("relative", ""))
+                raw = base64.b64decode(str(data.get("data", "")), validate=True)
+                if len(raw) > 20 * 1024 * 1024:
+                    raise ValueError("修改版文件不能超过 20 MB")
+                result = ui_revisions.add_candidate(run_dir, relative, str(data.get("name", "")), raw, ROOT)
+                self.send_json({"ok": True, **result})
+            elif self.path == "/api/revision/choose":
+                run_dir = Path(str(data.get("run_dir", ""))).resolve()
+                relative = str(data.get("relative", ""))
+                choice = str(data.get("choice", ""))
+                if not run_dir.is_dir() or not within_root(run_dir):
+                    raise ValueError("无效的运行目录")
+                if relative in {"input/foreground.png", "unitex/mv_rgb.png"} and choice == "candidate":
+                    with CONTROLLER.lock:
+                        if CONTROLLER.process is not None and CONTROLLER.process.poll() is None:
+                            raise RuntimeError("流水线正在运行，不能切换到修改版")
+                texture_input = None
+                texture_shape = None
+                if relative == "unitex/mv_rgb.png" and choice == "candidate":
+                    try:
+                        texture_input = ui_revisions.available_artifact(
+                            run_dir, "input/foreground.png", ROOT
+                        )
+                        texture_shape = ui_revisions.available_artifact(
+                            run_dir, "hunyuan/mesh_shape_review_clean.glb", ROOT
+                        )
+                    except ValueError as exc:
+                        raise ValueError("要继续六视图修改版，原运行目录须有透明底输入和无色模型")
+                record = ui_revisions.choose(run_dir, relative, choice, ROOT)
+                response: dict[str, object] = {"ok": True, "selected_path": record[choice]}
+                if relative == "input/foreground.png" and choice == "candidate":
+                    image = Path(str(record["candidate"]))
+                    branch = ui_revisions.create_input_branch(run_dir, image, ROOT)
+                    ui_revisions.register_generated_pair(
+                        branch, relative, Path(str(record["original"])), image, ROOT
+                    )
+                    ui_revisions.choose(branch, relative, "candidate", ROOT)
+                    CONTROLLER.activate_branch(branch, image)
+                elif relative == "unitex/mv_rgb.png" and choice == "candidate":
+                    assert texture_input is not None and texture_shape is not None
+                    image = texture_input
+                    shape = texture_shape
+                    sheet = Path(str(record["candidate"]))
+                    branch = ui_revisions.create_texture_branch(run_dir, sheet, image, shape, ROOT)
+                    ui_revisions.register_generated_pair(
+                        branch, relative, Path(str(record["original"])), sheet, ROOT
+                    )
+                    ui_revisions.choose(branch, relative, "candidate", ROOT)
+                    CONTROLLER.activate_branch(branch, image)
+                self.send_json(response)
+            elif self.path == "/api/assistant/chat":
+                run_text = str(data.get("run_dir", ""))
+                run_dir = Path(run_text).resolve() if run_text else None
+                if run_dir is not None and (not run_dir.is_dir() or not within_root(run_dir)):
+                    raise ValueError("无效的运行目录")
+                history = data.get("history", [])
+                if not isinstance(history, list):
+                    raise ValueError("无效的对话记录")
+                result = ui_assistant.chat(
+                    run_dir=run_dir, mode=str(data.get("mode", "")),
+                    value=str(data.get("value", "")), message=str(data.get("message", "")),
+                    history=history,
+                    dispatch=lambda tool, args: self.dispatch_assistant(run_dir, tool, args),
+                )
+                self.send_json(result)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
@@ -622,12 +1017,28 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             self.send_json({"error": f"服务器错误：{exc}"}, status=500)
 
+    @staticmethod
+    def dispatch_assistant(run_dir: Path | None, tool: str, args: dict[str, object]) -> dict[str, object]:
+        if run_dir is None:
+            raise ValueError("请先选择一个已有运行目录")
+        with CONTROLLER.lock:
+            if CONTROLLER.process is not None and CONTROLLER.process.poll() is None:
+                raise RuntimeError("流水线正在运行，请在当前阶段结束后修改")
+        return ASSISTANT_JOBS.submit(run_dir, tool, args)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=7865)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--run-dir", type=Path, help="载入已有运行目录，仅用于显示产物")
     args = parser.parse_args()
+    if args.run_dir is not None:
+        run_dir = args.run_dir.resolve()
+        if not run_dir.is_dir() or not within_root(run_dir):
+            parser.error("--run-dir 必须是项目内已有的运行目录")
+        CONTROLLER.run_dir = run_dir
+        CONTROLLER.message = "已载入现有结果"
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     url = f"http://127.0.0.1:{args.port}"
     print(f"Pipeline UI: {url}", flush=True)

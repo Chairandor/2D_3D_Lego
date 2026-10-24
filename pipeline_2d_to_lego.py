@@ -6,11 +6,11 @@ checkout.  Expensive stages are resumable and review-gated.
 
 Usage (from any terminal)::
 
-    python E:\\3D_TEST\\pipeline_2d_to_lego.py your.png
-    python E:\\3D_TEST\\pipeline_2d_to_lego.py your.png --accept-geometry
-    python E:\\3D_TEST\\pipeline_2d_to_lego.py your.png --from-shape shape.glb
+    python pipeline_2d_to_lego.py your.png
+    python pipeline_2d_to_lego.py your.png --accept-geometry
+    python pipeline_2d_to_lego.py your.png --from-shape shape.glb
 
-Outputs land in ``E:\\3D_TEST\\runs\\<name>\\``:
+Outputs land in ``runs\\<name>\\`` by default:
   - ``input/foreground.png``                 accepted RGBA cutout
   - ``hunyuan/mesh_shape_review_clean.glb``  colourless geometry
   - ``unitex/mv_rgb.png``                    six-view colour review
@@ -102,6 +102,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--unitex-host", default=DEFAULT_UNITEX_HOST)
     parser.add_argument("--unitex-key", type=Path, default=DEFAULT_UNITEX_KEY)
     parser.add_argument("--unitex-remote-root", default=DEFAULT_UNITEX_ROOT)
+    parser.add_argument("--unitex-six-view", type=Path, default=None,
+                        help="accepted replacement mv_rgb.png; projection only")
+    parser.add_argument("--unitex-cache-run-dir", type=Path, default=None,
+                        help="run directory that owns the original stage-1 remote cache")
     parser.add_argument(
         "--unitex-gpu",
         type=int,
@@ -183,6 +187,10 @@ def parse_args() -> argparse.Namespace:
         help="snap mesh colours to real brick RGB before voxelization "
         "(common: widely available System colours, default; "
         "full: every opaque LDConfig solid; off: leave reconstructed colours)",
+    )
+    parser.add_argument(
+        "--colour-coherence", choices=("on", "off"), default="on",
+        help="merge near-uniform palette regions (default: on; use off to preserve raw mapping)",
     )
     parser.add_argument(
         "--refine",
@@ -644,6 +652,7 @@ def convert_glb_to_ply(
     orient: str = "auto",
     colour: str = "albedo",
     lego_palette: str = "common",
+    colour_coherence: bool = True,
     refine: bool = False,
 ) -> None:
     """Bake a textured GLB into vertex colors and write a .ply mesh.
@@ -707,7 +716,17 @@ def convert_glb_to_ply(
             mesh, glb_path.with_name("input.png")
         )
         print(f"source detail recovery: {detail_report}", flush=True)
+    source_colours = getattr(mesh.visual, "vertex_colors", None)
+    source_rgb = (
+        np.asarray(source_colours)[:, :3].copy()
+        if source_colours is not None and len(source_colours) == len(mesh.vertices)
+        else None
+    )
     mesh = map_to_lego_colours(mesh, lego_palette)
+    if colour_coherence and lego_palette != "off" and source_rgb is not None:
+        from lego_colour_coherence import stabilize_palette_regions
+
+        print(f"palette colour coherence: {stabilize_palette_regions(mesh, source_rgb)}", flush=True)
     if refine and lego_palette != "off":
         from lego_refinement import remove_tiny_colour_islands
 
@@ -874,6 +893,8 @@ def run_unitex_remote(
     gpu_index: int,
     phase: str,
     force: bool,
+    six_view_override: Path | None = None,
+    cache_run_dir: Path | None = None,
 ) -> Path | None:
     """Run a resumable UniTEX phase on the configured Linux GPU host."""
     # Do not pre-open the private key from Python. On managed Windows hosts the
@@ -893,6 +914,12 @@ def run_unitex_remote(
     )
     remote_job = f"{remote_root}/pipeline-runs/{job_name}"
     remote_output = f"{remote_job}/output"
+    source_output = None
+    if cache_run_dir is not None:
+        source_job = _unitex_job_name(
+            cache_run_dir, reference, shape, steps=steps, seed=seed, projection=projection
+        )
+        source_output = f"{remote_root}/pipeline-runs/{source_job}/output"
     remote_wrapper = f"{remote_job}/run_unitex_external.py"
     remote_reference = f"{remote_job}/reference.png"
     remote_shape = f"{remote_job}/shape.glb"
@@ -945,11 +972,31 @@ def run_unitex_remote(
     # cache has disappeared from the GPU host.
     remote_stage1_cache = f"{remote_output}/cache/camera_info.pth"
     if phase == "project" and not _remote_exists(host, key, remote_stage1_cache):
-        print("remote UniTEX cache missing; rebuilding stage-1 before projection", flush=True)
-        _remote_exec(host, key, phase_command("stage1"))
+        source_cache = f"{source_output}/cache/camera_info.pth" if source_output else ""
+        if source_output and _remote_exists(host, key, source_cache):
+            _remote_exec(
+                host, key,
+                f"mkdir -p {shlex.quote(remote_output + '/cache')} && "
+                f"cp -a {shlex.quote(source_output + '/cache/.')} {shlex.quote(remote_output + '/cache/')}",
+            )
+            print("reuse original UniTEX stage-1 cache in a separate branch", flush=True)
+        else:
+            print("remote UniTEX cache missing; rebuilding stage-1 before projection", flush=True)
+            _remote_exec(host, key, phase_command("stage1"))
+
+    if phase == "project" and six_view_override is not None:
+        override = require(six_view_override.resolve(), "accepted UniTEX six-view image")
+        if override.suffix.lower() != ".png":
+            raise ValueError("UniTEX six-view replacement must be PNG")
+        remote_sheet = f"{remote_output}/cache/mv_rgb.png"
+        run([*_scp_base(key), str(override), f"{host}:{remote_sheet}"])
+        _remote_exec(
+            host, key,
+            f"cp {shlex.quote(remote_sheet)} {shlex.quote(remote_output + '/mv_rgb.png')}",
+        )
 
     marker = f"{remote_output}/mv_rgb.png" if phase == "stage1" else f"{remote_output}/textured_mesh.glb"
-    if force or not _remote_exists(host, key, marker):
+    if force or six_view_override is not None or not _remote_exists(host, key, marker):
         _remote_exec(host, key, phase_command(phase))
     else:
         print(f"reuse remote UniTEX {phase}: {marker}", flush=True)
@@ -1195,6 +1242,7 @@ def convert_via_lego_python(
     orient: str,
     colour: str,
     lego_palette: str,
+    colour_coherence: bool,
     refine: bool,
 ) -> None:
     require(LEGO_PYTHON, "legolization venv python")
@@ -1214,6 +1262,8 @@ def convert_via_lego_python(
             colour,
             "--lego-palette",
             lego_palette,
+            "--colour-coherence",
+            "on" if colour_coherence else "off",
             *(["--refine"] if refine else []),
         ]
     )
@@ -1252,10 +1302,10 @@ def run_legolization_build(
     target_studs: int,
     strategy: str,
 ) -> None:
-    require(LEGO_CLI, "legolization CLI")
+    lego_python = require(LEGO_CLI.with_name("python.exe"), "legolization Python")
     model_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        str(LEGO_CLI),
+        str(lego_python), "-m", "legolization.main",
         "build",
         str(ply_path),
         "-o",
@@ -1277,10 +1327,10 @@ def run_legolization_bundle(
     target_studs: int,
     quality: str,
 ) -> None:
-    require(LEGO_CLI, "legolization CLI")
+    lego_python = require(LEGO_CLI.with_name("python.exe"), "legolization Python")
     bundle_dir.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        str(LEGO_CLI),
+        str(lego_python), "-m", "legolization.main",
         "bundle",
         str(ply_path),
         "-o",
@@ -1352,6 +1402,7 @@ def main() -> int:
             orient=args.orient,
             colour=args.colour,
             lego_palette=args.lego_palette,
+            colour_coherence=args.colour_coherence == "on",
             refine=args.refine,
         )
         return 0
@@ -1381,6 +1432,10 @@ def main() -> int:
     input_dir = run_dir / "input"
     hunyuan_dir = run_dir / "hunyuan"
     unitex_dir = run_dir / "unitex"
+    six_view_override = require(args.unitex_six_view.resolve(), "replacement six-view image") if args.unitex_six_view else None
+    cache_run_dir = args.unitex_cache_run_dir.resolve() if args.unitex_cache_run_dir else None
+    if six_view_override is not None and cache_run_dir is None:
+        raise ValueError("--unitex-six-view requires --unitex-cache-run-dir")
     oriented_dir = run_dir / "oriented"
     ply_path = oriented_dir / "lego_input.ply"
     lego_name = f"lego-{args.target_studs}"
@@ -1482,7 +1537,17 @@ def main() -> int:
             return 2
 
         stage1 = unitex_dir / "mv_rgb.png"
-        if args.force or not stage1.is_file():
+        if six_view_override is not None:
+            unitex_dir.mkdir(parents=True, exist_ok=True)
+            if not stage1.is_file() or _file_digest(stage1) != _file_digest(six_view_override):
+                shutil.copy2(six_view_override, stage1)
+            if cache_run_dir is not None:
+                original_alpha = cache_run_dir / "unitex" / "mv_alpha.png"
+                branch_alpha = unitex_dir / "mv_alpha.png"
+                if original_alpha.is_file() and not branch_alpha.is_file():
+                    shutil.copy2(original_alpha, branch_alpha)
+            print(f"[2/5] accepted replacement UniTEX six-view sheet: {stage1}", flush=True)
+        elif args.force or not stage1.is_file():
             print("[2/5] UniTEX six-view colouring", flush=True)
             run_unitex_remote(
                 foreground,
@@ -1529,6 +1594,8 @@ def main() -> int:
                 gpu_index=args.unitex_gpu,
                 phase="project",
                 force=args.force,
+                six_view_override=six_view_override,
+                cache_run_dir=cache_run_dir,
             )
         else:
             textured = textured_path
@@ -1544,6 +1611,7 @@ def main() -> int:
         orient=args.orient,
         colour=args.colour,
         lego_palette=args.lego_palette,
+        colour_coherence=args.colour_coherence == "on",
         refine=args.refine,
     )
 

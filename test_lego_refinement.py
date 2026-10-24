@@ -196,7 +196,7 @@ class RefinementTests(unittest.TestCase):
         )
         rgba = np.full((128, 128, 4), 255, dtype=np.uint8)
         rgba[53:75, 53:75, :3] = [27, 42, 52]
-        with TemporaryDirectory() as temporary:
+        with TemporaryDirectory(dir=Path(__file__).resolve().parent) as temporary:
             image_path = Path(temporary) / "input.png"
             Image.fromarray(rgba, "RGBA").save(image_path)
             protected, report = recover_dark_image_details(mesh, image_path)

@@ -6,7 +6,7 @@
 2. **几何**：本地 NVIDIA GPU 运行 Hunyuan3D-2mini，输出 `mesh_shape_only.glb`。独立工具生成清理后的副本和几何检查图，原始结果保留。
 3. **着色预览**：上传透明底图与无色网格到 Linux。UniTEX stage1 生成六视图；接入脚本保留既有 Alpha，并使用 NF4 FLUX 量化及 CPU offload。
 4. **最终贴图**：批准六视图后运行 project。LTM 补全不可见面并生成 textured GLB；默认使用 Open3D ray backend。结果通过 SCP 下载到本地。
-5. **方位与颜色**：依据支撑面、主轴、重心及原参考视图等线索进行通用 Y-up 校正；纹理转顶点色并映射为 LEGO 调色板，输出 `oriented/lego_input.ply`。
+5. **方位与颜色**：依据支撑面、主轴、重心及原参考视图等线索进行通用 Y-up 校正；纹理转顶点色并映射为 LEGO 调色板。默认启用 `lego_colour_coherence.py` 的保守局部连贯处理，减少近似同色区域在调色板边界产生的零碎色块，输出 `oriented/lego_input.ply`。可用 `--colour-coherence off` 对照关闭；这一步不编辑已经生成的 MPD。
 6. **积木**：显式批准后调用 Legolization。默认 `fast`、Y-up、表面体素化、单网格相位、不自动 hollow；保存 `lego-N/model.mpd`。Bundle 是另一个可选步骤。
 
 ## 推荐宽度
@@ -22,3 +22,7 @@ UI 在当前任务结束且 PLY 已存在时后台调用上游 `recommend_voxeli
 旧 SF3D、手工投影着色、Paint3D 与原生 Hunyuan Paint 试验保留便于比较，不自动用于主流程。`segmentation_lab/repair_cutout.py` 修边试验和 `--refine` 精修也没有默认开启。不要根据单张 PNG 的观感自动启用这些变换；它们可能改变后续重建的几何。
 
 当前测试覆盖输入分流、验收顺序、朝向、部分颜色处理和 UI 编排，不代替多素材端到端验证。
+
+## 阶段助手与候选版本
+
+`ui_assistant.py` 向百炼对话服务提供受限工具选择，`ui_agent_jobs.py` 负责图片编辑或 Legolization CLI 的后台任务，`ui_revisions.py` 保存候选、确认状态与分支。输入图候选和六视图候选在确认后分别建立新分支；旧产物在后续阶段尚未生成时仍可查看。助手不能执行任意 shell 命令，也没有 3D 网格编辑器或 MPD 局部颜色编辑器。有关环境变量和现阶段限制，见 [部署说明](SETUP.md) 与 [阶段助手说明](../ASSISTANT_UI.md)。

@@ -34,6 +34,12 @@ class HunyuanUniTEXPipelineTests(unittest.TestCase):
         ply.write_bytes(b"ply")
         ply.with_name("mesh_upright.glb").write_bytes(b"upright")
 
+    def test_colour_coherence_is_default_and_can_be_disabled(self) -> None:
+        with patch.object(sys, "argv", ["pipeline"]):
+            self.assertEqual(pipeline.parse_args().colour_coherence, "on")
+        with patch.object(sys, "argv", ["pipeline", "--colour-coherence", "off"]):
+            self.assertEqual(pipeline.parse_args().colour_coherence, "off")
+
     def test_valid_transparent_input_bypasses_segmentation(self) -> None:
         transparent = self.work / "transparent.png"
         image = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
