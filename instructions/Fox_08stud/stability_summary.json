@@ -1,0 +1,83 @@
+{
+  "model": "model",
+  "engine": "legolization 0.6.0",
+  "input_sha256": "14423936b904fb00f9a50ca74b16c68382276a25b08f7e74f265144fe47d1575",
+  "report_sha256": "33faf759067c44cd210a7c163a3329bb6c03b4566d9fb2d85a98a5ab2dd43c0c",
+  "pieces": 65,
+  "steps": 12,
+  "final_stability": {
+    "stable": false,
+    "status": "optimal",
+    "objective": 0.0452086698997492,
+    "max_score": 1.0,
+    "unstable_ids": [
+      15,
+      20,
+      21,
+      25,
+      39,
+      51,
+      63
+    ]
+  },
+  "topology": {
+    "component_count": 4,
+    "floating_count": 10,
+    "floating_ids": [
+      15,
+      20,
+      21,
+      25,
+      32,
+      39,
+      44,
+      51,
+      52,
+      63
+    ]
+  },
+  "instruction_certified": false,
+  "static_risk_steps": [
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12
+  ],
+  "insertion_risk_steps": [],
+  "restored_warning_flags": [],
+  "certification": {
+    "violations": [],
+    "cold_prefix_count": 12,
+    "earliest_failure": {
+      "step_index": 4,
+      "action": "place",
+      "occurrence_ids": [
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18
+      ],
+      "unstable_ids": [
+        12,
+        13,
+        15,
+        16,
+        17,
+        18
+      ],
+      "max_score": 1.0
+    }
+  },
+  "stability_optimization": false,
+  "meaning": "legolization 数字检查；不能替代或覆盖既有 StableLego/Gurobi 结果；目标值不是稳定概率。",
+  "step_verification_status": "COMPLETED",
+  "publication_note": "复用已保存分析及风险；本次没有启动稳定性计算。"
+}

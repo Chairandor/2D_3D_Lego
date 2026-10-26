@@ -1,0 +1,85 @@
+{
+  "model": "橙子 8 凸点版",
+  "engine": "legolization 0.6.0",
+  "input_sha256": "dd589f5689e3538b39649fa1f33e8cd6b162c3f449eac711f24e4713fde10bc6",
+  "report_sha256": "6099665639cb3170fad4ccc3c552e8860beca739d4cda8d260cec9da60f4271c",
+  "pieces": 205,
+  "steps": 51,
+  "final_stability": {
+    "stable": true,
+    "status": "optimal",
+    "objective": 0.00014498652047972645,
+    "max_score": 0.0217289072632944,
+    "unstable_ids": []
+  },
+  "topology": {
+    "component_count": 1,
+    "floating_count": 0,
+    "floating_ids": []
+  },
+  "instruction_certified": false,
+  "static_risk_steps": [
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    28,
+    29,
+    30,
+    38,
+    39,
+    42,
+    43,
+    44,
+    45
+  ],
+  "insertion_risk_steps": [
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    19,
+    22,
+    25,
+    26,
+    27,
+    31,
+    35,
+    36,
+    40,
+    46,
+    47,
+    49,
+    50,
+    51
+  ],
+  "restored_warning_flags": [],
+  "certification": {
+    "violations": [],
+    "cold_prefix_count": 51,
+    "earliest_failure": {
+      "step_index": 4,
+      "action": "subassembly-build",
+      "occurrence_ids": [
+        15,
+        16,
+        17,
+        18
+      ],
+      "unstable_ids": [
+        18
+      ],
+      "max_score": 1.0
+    }
+  },
+  "stability_optimization": false,
+  "meaning": "legolization 数字检查；不能替代或覆盖既有 StableLego/Gurobi 结果；目标值不是稳定概率。",
+  "step_verification_status": "COMPLETED",
+  "publication_note": "复用已保存分析及风险；本次没有启动稳定性计算。"
+}

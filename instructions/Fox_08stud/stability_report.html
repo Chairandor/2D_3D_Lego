@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><title>model稳定性报告</title>
+<style>body{font:16px system-ui;max-width:950px;margin:30px auto;padding:20px;line-height:1.8}table{border-collapse:collapse;width:100%}th,td{padding:7px;text-align:left;border-bottom:1px solid #ddd}.warning{color:#a45225}</style>
+<h1>model · 稳定性分析</h1><p>65 件 · 12 步 · 待验证草稿</p>
+<p>最终模型静力：未通过；求解状态 optimal；目标值 0.04520867；最大零件分数 1。</p>
+<p>连通组件 4；悬空件 10；静力风险步骤 9；按压插入风险步骤 0。</p>
+<p class="warning">说明书图文完成不等于实物可稳定拼搭。optimal 表示数值求解完成，不等于结构稳定；目标值不能解释为倒塌概率。</p>
+<p>使用 legolization 0.6.0 的接触与地面假设：ground_pull=True（为 true 时地面可提供拉力，接近底板连接假设），不能直接等同于放在光滑桌面上的模型。没有改变模型几何，也没有执行稳定性优化。</p>
+<p>StableLego 既有实验另外保存在项目 history 目录，其单位、近似和求解设置不同，不能直接比较两个工具的目标值。完整参数与最早失败步骤见 JSON。</p>
+<table><tr><th>步骤</th><th>构建位置</th><th>自重静力</th><th>插入风险</th></tr><tr><td>1</td><td>主模型</td><td>通过</td><td>未标记风险</td></tr><tr><td>2</td><td>主模型</td><td>通过</td><td>未标记风险</td></tr><tr><td>3</td><td>主模型</td><td>通过</td><td>未标记风险</td></tr><tr><td>4</td><td>主模型</td><td>未通过</td><td>未标记风险</td></tr><tr><td>5</td><td>主模型</td><td>未通过</td><td>未标记风险</td></tr><tr><td>6</td><td>主模型</td><td>未通过</td><td>未标记风险</td></tr><tr><td>7</td><td>主模型</td><td>未通过</td><td>未标记风险</td></tr><tr><td>8</td><td>主模型</td><td>未通过</td><td>未标记风险</td></tr><tr><td>9</td><td>主模型</td><td>未通过</td><td>未标记风险</td></tr><tr><td>10</td><td>主模型</td><td>未通过</td><td>未标记风险</td></tr><tr><td>11</td><td>主模型</td><td>未通过</td><td>未标记风险</td></tr><tr><td>12</td><td>主模型</td><td>未通过</td><td>未标记风险</td></tr></table>

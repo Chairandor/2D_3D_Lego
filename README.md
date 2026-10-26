@@ -87,3 +87,7 @@ python -m venv .venv-review
 - [SAM 2](https://github.com/facebookresearch/sam2) 与 [Florence-2-large-ft](https://huggingface.co/microsoft/Florence-2-large-ft)。
 
 接入脚本在上游仓库外运行，部分适配通过运行时替换实现，不修改上游磁盘源码。上游源码和权重按各自项目条款获取；本仓库没有把它们重新打包或授予统一许可，见 [来源与许可说明](THIRD_PARTY.md)。
+
+## 中文拼搭说明书成品
+
+本分支新增[中文说明书目录](instructions/README.md)，含11份PDF、9份HTML及其图片。生成状态和稳定性状态分别列明；草稿与未通过/未完成验证风险保留。

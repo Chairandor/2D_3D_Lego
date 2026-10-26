@@ -1,0 +1,21 @@
+{
+  "pdf_open_and_page_counts_passed": true,
+  "html_image_references_passed": true,
+  "source_pdf_html_images_copied_byte_identical": true,
+  "new_model_coverage_and_existing_visual_checks_passed": true,
+  "specified_legacy_pdf_hashes_passed": true,
+  "new_model_count": 9,
+  "pdf_count": 11,
+  "html_count": 9,
+  "required_image_count": 1333,
+  "new_solver_invocations": 0,
+  "no_replanning_or_rerendering": true,
+  "all_generation_complete": true,
+  "stability_validation_incomplete_models": [
+    "Fox_18stud",
+    "Orange_14stud",
+    "Fox_27stud",
+    "Fox_30stud",
+    "Fox_32stud"
+  ]
+}
