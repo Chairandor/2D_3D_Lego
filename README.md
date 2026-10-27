@@ -91,3 +91,7 @@ python -m venv .venv-review
 ## 中文拼搭说明书成品
 
 本分支新增[中文说明书目录](instructions/README.md)，含11份PDF、9份HTML及其图片。生成状态和稳定性状态分别列明；草稿与未通过/未完成验证风险保留。
+
+## 可运行说明书工程（先说明书，后稳定性）
+
+完整入口、独立安装、便携配置和中文说明见 [workbench/README.md](workbench/README.md)。用 VS Code 打开 `workbench/Lego_Workbench.code-workspace`；配置 Python 3.12、LeoCAD、LDraw 后，`Run.ps1 -InputModel` 先生成可查看的 PDF/HTML，再自动执行每模型累计最多 30 分钟的静力分析。九个已有成品及小鸡、兔子 PDF 原样复用，稳定性状态与生成状态分别保留。团队已有的 legolization 0.6.0 快照及字体随工程保留，其来源与许可说明分别见 workbench 中的 NOTICE、provenance 和字体许可证。

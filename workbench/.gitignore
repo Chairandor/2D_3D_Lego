@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+outputs/
+.setup_temp/
+.test_temp/
+config/local.json
+*.egg-info/
+vendor/**/build/
+!inputs/team/*/model.mpd
+!checkpoints/team/*/model_steps.mpd
+!vendor/legolization060/legolization/
+!vendor/legolization060/legolization/**

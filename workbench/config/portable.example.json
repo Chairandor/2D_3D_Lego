@@ -1,0 +1,10 @@
+{
+  "renderer": "E:/Software/LeoCAD/LeoCAD.exe",
+  "ldraw_dir": "E:/Software/LDraw/ldraw",
+  "output_root": "outputs",
+  "reuse_roots": [],
+  "ground": true,
+  "step_size": 7,
+  "stability_policy": "warn",
+  "models": {}
+}

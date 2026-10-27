@@ -1,0 +1,705 @@
+{
+  "model": "model.mpd",
+  "brick_count": 65,
+  "mass_g": 23.55,
+  "total": [
+    {
+      "part_key": "brick_1x1",
+      "ldraw_part": "3005",
+      "colour_code": 4,
+      "colour_name": "Red",
+      "quantity": 1,
+      "mass_g": 0.44
+    },
+    {
+      "part_key": "brick_1x3",
+      "ldraw_part": "3622",
+      "colour_code": 15,
+      "colour_name": "White",
+      "quantity": 1,
+      "mass_g": 1.24
+    },
+    {
+      "part_key": "plate_1x1",
+      "ldraw_part": "3024",
+      "colour_code": 4,
+      "colour_name": "Red",
+      "quantity": 9,
+      "mass_g": 1.8
+    },
+    {
+      "part_key": "plate_1x1",
+      "ldraw_part": "3024",
+      "colour_code": 15,
+      "colour_name": "White",
+      "quantity": 1,
+      "mass_g": 0.2
+    },
+    {
+      "part_key": "plate_1x1",
+      "ldraw_part": "3024",
+      "colour_code": 25,
+      "colour_name": "Orange",
+      "quantity": 7,
+      "mass_g": 1.4
+    },
+    {
+      "part_key": "plate_1x1",
+      "ldraw_part": "3024",
+      "colour_code": 70,
+      "colour_name": "Reddish_Brown",
+      "quantity": 1,
+      "mass_g": 0.2
+    },
+    {
+      "part_key": "plate_1x1",
+      "ldraw_part": "3024",
+      "colour_code": 84,
+      "colour_name": "Medium_Nougat",
+      "quantity": 2,
+      "mass_g": 0.4
+    },
+    {
+      "part_key": "plate_1x1",
+      "ldraw_part": "3024",
+      "colour_code": 484,
+      "colour_name": "Dark_Orange",
+      "quantity": 4,
+      "mass_g": 0.8
+    },
+    {
+      "part_key": "plate_1x2",
+      "ldraw_part": "3023",
+      "colour_code": 4,
+      "colour_name": "Red",
+      "quantity": 1,
+      "mass_g": 0.36
+    },
+    {
+      "part_key": "plate_1x2",
+      "ldraw_part": "3023",
+      "colour_code": 15,
+      "colour_name": "White",
+      "quantity": 2,
+      "mass_g": 0.72
+    },
+    {
+      "part_key": "plate_1x2",
+      "ldraw_part": "3023",
+      "colour_code": 25,
+      "colour_name": "Orange",
+      "quantity": 6,
+      "mass_g": 2.16
+    },
+    {
+      "part_key": "plate_1x2",
+      "ldraw_part": "3023",
+      "colour_code": 484,
+      "colour_name": "Dark_Orange",
+      "quantity": 1,
+      "mass_g": 0.36
+    },
+    {
+      "part_key": "plate_1x3",
+      "ldraw_part": "3623",
+      "colour_code": 15,
+      "colour_name": "White",
+      "quantity": 1,
+      "mass_g": 0.53
+    },
+    {
+      "part_key": "plate_1x3",
+      "ldraw_part": "3623",
+      "colour_code": 25,
+      "colour_name": "Orange",
+      "quantity": 5,
+      "mass_g": 2.65
+    },
+    {
+      "part_key": "plate_1x3",
+      "ldraw_part": "3623",
+      "colour_code": 308,
+      "colour_name": "Dark_Brown",
+      "quantity": 1,
+      "mass_g": 0.53
+    },
+    {
+      "part_key": "plate_1x4",
+      "ldraw_part": "3710",
+      "colour_code": 25,
+      "colour_name": "Orange",
+      "quantity": 3,
+      "mass_g": 2.13
+    },
+    {
+      "part_key": "plate_1x6",
+      "ldraw_part": "3666",
+      "colour_code": 25,
+      "colour_name": "Orange",
+      "quantity": 1,
+      "mass_g": 1.06
+    },
+    {
+      "part_key": "plate_2x3",
+      "ldraw_part": "3021",
+      "colour_code": 25,
+      "colour_name": "Orange",
+      "quantity": 1,
+      "mass_g": 0.93
+    },
+    {
+      "part_key": "plate_2x4",
+      "ldraw_part": "3020",
+      "colour_code": 25,
+      "colour_name": "Orange",
+      "quantity": 1,
+      "mass_g": 1.2
+    },
+    {
+      "part_key": "slope_inverted_45_2x2",
+      "ldraw_part": "3660",
+      "colour_code": 25,
+      "colour_name": "Orange",
+      "quantity": 1,
+      "mass_g": 1.08
+    },
+    {
+      "part_key": "tile_1x1",
+      "ldraw_part": "3070b",
+      "colour_code": 15,
+      "colour_name": "White",
+      "quantity": 3,
+      "mass_g": 0.48
+    },
+    {
+      "part_key": "tile_1x1",
+      "ldraw_part": "3070b",
+      "colour_code": 25,
+      "colour_name": "Orange",
+      "quantity": 4,
+      "mass_g": 0.64
+    },
+    {
+      "part_key": "tile_1x1",
+      "ldraw_part": "3070b",
+      "colour_code": 92,
+      "colour_name": "Nougat",
+      "quantity": 2,
+      "mass_g": 0.32
+    },
+    {
+      "part_key": "tile_1x1",
+      "ldraw_part": "3070b",
+      "colour_code": 191,
+      "colour_name": "Bright_Light_Orange",
+      "quantity": 1,
+      "mass_g": 0.16
+    },
+    {
+      "part_key": "tile_1x2",
+      "ldraw_part": "3069b",
+      "colour_code": 15,
+      "colour_name": "White",
+      "quantity": 1,
+      "mass_g": 0.26
+    },
+    {
+      "part_key": "tile_1x2",
+      "ldraw_part": "3069b",
+      "colour_code": 25,
+      "colour_name": "Orange",
+      "quantity": 2,
+      "mass_g": 0.52
+    },
+    {
+      "part_key": "tile_2x2",
+      "ldraw_part": "3068b",
+      "colour_code": 25,
+      "colour_name": "Orange",
+      "quantity": 2,
+      "mass_g": 0.98
+    }
+  ],
+  "steps": [
+    {
+      "step": 1,
+      "brick_count": 4,
+      "parts": [
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 70,
+          "colour_name": "Reddish_Brown",
+          "quantity": 1,
+          "mass_g": 0.2
+        },
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 84,
+          "colour_name": "Medium_Nougat",
+          "quantity": 2,
+          "mass_g": 0.4
+        },
+        {
+          "part_key": "plate_1x3",
+          "ldraw_part": "3623",
+          "colour_code": 308,
+          "colour_name": "Dark_Brown",
+          "quantity": 1,
+          "mass_g": 0.53
+        }
+      ]
+    },
+    {
+      "step": 2,
+      "brick_count": 4,
+      "parts": [
+        {
+          "part_key": "brick_1x1",
+          "ldraw_part": "3005",
+          "colour_code": 4,
+          "colour_name": "Red",
+          "quantity": 1,
+          "mass_g": 0.44
+        },
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.2
+        },
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 484,
+          "colour_name": "Dark_Orange",
+          "quantity": 1,
+          "mass_g": 0.2
+        },
+        {
+          "part_key": "plate_1x3",
+          "ldraw_part": "3623",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.53
+        }
+      ]
+    },
+    {
+      "step": 3,
+      "brick_count": 4,
+      "parts": [
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 4,
+          "colour_name": "Red",
+          "quantity": 2,
+          "mass_g": 0.4
+        },
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.2
+        },
+        {
+          "part_key": "plate_1x2",
+          "ldraw_part": "3023",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.36
+        }
+      ]
+    },
+    {
+      "step": 4,
+      "brick_count": 7,
+      "parts": [
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 4,
+          "colour_name": "Red",
+          "quantity": 2,
+          "mass_g": 0.4
+        },
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 15,
+          "colour_name": "White",
+          "quantity": 1,
+          "mass_g": 0.2
+        },
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 484,
+          "colour_name": "Dark_Orange",
+          "quantity": 1,
+          "mass_g": 0.2
+        },
+        {
+          "part_key": "plate_1x2",
+          "ldraw_part": "3023",
+          "colour_code": 15,
+          "colour_name": "White",
+          "quantity": 2,
+          "mass_g": 0.72
+        },
+        {
+          "part_key": "plate_1x2",
+          "ldraw_part": "3023",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.36
+        }
+      ]
+    },
+    {
+      "step": 5,
+      "brick_count": 5,
+      "parts": [
+        {
+          "part_key": "brick_1x3",
+          "ldraw_part": "3622",
+          "colour_code": 15,
+          "colour_name": "White",
+          "quantity": 1,
+          "mass_g": 1.24
+        },
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.2
+        },
+        {
+          "part_key": "plate_1x2",
+          "ldraw_part": "3023",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.36
+        },
+        {
+          "part_key": "plate_1x2",
+          "ldraw_part": "3023",
+          "colour_code": 484,
+          "colour_name": "Dark_Orange",
+          "quantity": 1,
+          "mass_g": 0.36
+        },
+        {
+          "part_key": "plate_2x4",
+          "ldraw_part": "3020",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 1.2
+        }
+      ]
+    },
+    {
+      "step": 6,
+      "brick_count": 5,
+      "parts": [
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 4,
+          "colour_name": "Red",
+          "quantity": 2,
+          "mass_g": 0.4
+        },
+        {
+          "part_key": "plate_1x2",
+          "ldraw_part": "3023",
+          "colour_code": 4,
+          "colour_name": "Red",
+          "quantity": 1,
+          "mass_g": 0.36
+        },
+        {
+          "part_key": "plate_1x3",
+          "ldraw_part": "3623",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.53
+        },
+        {
+          "part_key": "plate_1x4",
+          "ldraw_part": "3710",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.71
+        }
+      ]
+    },
+    {
+      "step": 7,
+      "brick_count": 7,
+      "parts": [
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 4,
+          "colour_name": "Red",
+          "quantity": 1,
+          "mass_g": 0.2
+        },
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.2
+        },
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 484,
+          "colour_name": "Dark_Orange",
+          "quantity": 2,
+          "mass_g": 0.4
+        },
+        {
+          "part_key": "tile_1x1",
+          "ldraw_part": "3070b",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 2,
+          "mass_g": 0.32
+        },
+        {
+          "part_key": "tile_1x1",
+          "ldraw_part": "3070b",
+          "colour_code": 191,
+          "colour_name": "Bright_Light_Orange",
+          "quantity": 1,
+          "mass_g": 0.16
+        }
+      ]
+    },
+    {
+      "step": 8,
+      "brick_count": 6,
+      "parts": [
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 4,
+          "colour_name": "Red",
+          "quantity": 1,
+          "mass_g": 0.2
+        },
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 2,
+          "mass_g": 0.4
+        },
+        {
+          "part_key": "plate_1x4",
+          "ldraw_part": "3710",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.71
+        },
+        {
+          "part_key": "plate_1x6",
+          "ldraw_part": "3666",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 1.06
+        },
+        {
+          "part_key": "slope_inverted_45_2x2",
+          "ldraw_part": "3660",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 1.08
+        }
+      ]
+    },
+    {
+      "step": 9,
+      "brick_count": 7,
+      "parts": [
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 4,
+          "colour_name": "Red",
+          "quantity": 1,
+          "mass_g": 0.2
+        },
+        {
+          "part_key": "plate_1x1",
+          "ldraw_part": "3024",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.2
+        },
+        {
+          "part_key": "plate_1x2",
+          "ldraw_part": "3023",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 2,
+          "mass_g": 0.72
+        },
+        {
+          "part_key": "plate_1x3",
+          "ldraw_part": "3623",
+          "colour_code": 15,
+          "colour_name": "White",
+          "quantity": 1,
+          "mass_g": 0.53
+        },
+        {
+          "part_key": "plate_1x3",
+          "ldraw_part": "3623",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.53
+        },
+        {
+          "part_key": "plate_1x4",
+          "ldraw_part": "3710",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.71
+        }
+      ]
+    },
+    {
+      "step": 10,
+      "brick_count": 6,
+      "parts": [
+        {
+          "part_key": "plate_1x2",
+          "ldraw_part": "3023",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.36
+        },
+        {
+          "part_key": "plate_1x3",
+          "ldraw_part": "3623",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 2,
+          "mass_g": 1.06
+        },
+        {
+          "part_key": "plate_2x3",
+          "ldraw_part": "3021",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 1,
+          "mass_g": 0.93
+        },
+        {
+          "part_key": "tile_1x1",
+          "ldraw_part": "3070b",
+          "colour_code": 15,
+          "colour_name": "White",
+          "quantity": 1,
+          "mass_g": 0.16
+        },
+        {
+          "part_key": "tile_1x2",
+          "ldraw_part": "3069b",
+          "colour_code": 15,
+          "colour_name": "White",
+          "quantity": 1,
+          "mass_g": 0.26
+        }
+      ]
+    },
+    {
+      "step": 11,
+      "brick_count": 7,
+      "parts": [
+        {
+          "part_key": "tile_1x1",
+          "ldraw_part": "3070b",
+          "colour_code": 15,
+          "colour_name": "White",
+          "quantity": 2,
+          "mass_g": 0.32
+        },
+        {
+          "part_key": "tile_1x1",
+          "ldraw_part": "3070b",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 2,
+          "mass_g": 0.32
+        },
+        {
+          "part_key": "tile_1x1",
+          "ldraw_part": "3070b",
+          "colour_code": 92,
+          "colour_name": "Nougat",
+          "quantity": 1,
+          "mass_g": 0.16
+        },
+        {
+          "part_key": "tile_2x2",
+          "ldraw_part": "3068b",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 2,
+          "mass_g": 0.98
+        }
+      ]
+    },
+    {
+      "step": 12,
+      "brick_count": 3,
+      "parts": [
+        {
+          "part_key": "tile_1x1",
+          "ldraw_part": "3070b",
+          "colour_code": 92,
+          "colour_name": "Nougat",
+          "quantity": 1,
+          "mass_g": 0.16
+        },
+        {
+          "part_key": "tile_1x2",
+          "ldraw_part": "3069b",
+          "colour_code": 25,
+          "colour_name": "Orange",
+          "quantity": 2,
+          "mass_g": 0.52
+        }
+      ]
+    }
+  ]
+}

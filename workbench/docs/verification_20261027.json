@@ -1,0 +1,88 @@
+{
+  "portable_index_all_hashes_passed": true,
+  "original_published_checksums_unchanged": true,
+  "pdf_count": 11,
+  "html_count": 9,
+  "html_image_references_checked": 3869,
+  "all_pdfs_open_and_page_counts_match": true,
+  "all_model_geometry_and_coverage_match": true,
+  "models": [
+    {
+      "id": "Fox_08stud",
+      "pieces": 65,
+      "steps": 12,
+      "generation_status": "PASSED",
+      "stability_status": "FAILED"
+    },
+    {
+      "id": "Orange_08stud",
+      "pieces": 205,
+      "steps": 51,
+      "generation_status": "PASSED",
+      "stability_status": "FAILED"
+    },
+    {
+      "id": "Apple_08stud",
+      "pieces": 286,
+      "steps": 73,
+      "generation_status": "PASSED",
+      "stability_status": "FAILED"
+    },
+    {
+      "id": "Fox_18stud",
+      "pieces": 336,
+      "steps": 50,
+      "generation_status": "PASSED",
+      "stability_status": "TIMEOUT"
+    },
+    {
+      "id": "Fox_24stud",
+      "pieces": 483,
+      "steps": 71,
+      "generation_status": "PASSED",
+      "stability_status": "FAILED"
+    },
+    {
+      "id": "Orange_14stud",
+      "pieces": 587,
+      "steps": 105,
+      "generation_status": "PASSED",
+      "stability_status": "TIMEOUT"
+    },
+    {
+      "id": "Fox_27stud",
+      "pieces": 615,
+      "steps": 96,
+      "generation_status": "PASSED",
+      "stability_status": "TIMEOUT"
+    },
+    {
+      "id": "Fox_30stud",
+      "pieces": 697,
+      "steps": 103,
+      "generation_status": "PASSED",
+      "stability_status": "TIMEOUT"
+    },
+    {
+      "id": "Fox_32stud",
+      "pieces": 796,
+      "steps": 121,
+      "generation_status": "PASSED",
+      "stability_status": "TIMEOUT"
+    }
+  ],
+  "new_old_model_solver_calls": 0,
+  "unit_tests_passed": 27,
+  "independent_setup_and_pip_check_passed": true,
+  "native_leocad_sample": {
+    "pieces": 3,
+    "steps": 3,
+    "pages": 7,
+    "analysis_limit_seconds": 0.2,
+    "outcome": "TIMEOUT",
+    "pdf_available_before_analysis": true,
+    "pdf_preserved_after_timeout": true,
+    "visual_pages_checked": 7
+  },
+  "specified_legacy_pdf_copies_hash_identical": true
+}

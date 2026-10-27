@@ -1,0 +1,96 @@
+{
+  "models": [
+    {
+      "id": "Fox_08stud",
+      "name": "狐狸 8 凸点版",
+      "studs": 8,
+      "input": "inputs/team/Fox_08stud/model.mpd",
+      "sha256": "14423936b904fb00f9a50ca74b16c68382276a25b08f7e74f265144fe47d1575",
+      "expected_pieces": 65,
+      "reuse_only": true
+    },
+    {
+      "id": "Orange_08stud",
+      "name": "橙子 8 凸点版",
+      "studs": 8,
+      "input": "inputs/team/Orange_08stud/model.mpd",
+      "sha256": "dd589f5689e3538b39649fa1f33e8cd6b162c3f449eac711f24e4713fde10bc6",
+      "expected_pieces": 205,
+      "reuse_only": true
+    },
+    {
+      "id": "Apple_08stud",
+      "name": "苹果 8 凸点版",
+      "studs": 8,
+      "input": "inputs/team/Apple_08stud/model.mpd",
+      "sha256": "c78f017f7fe985d88788496be1286c524fb1792162fcc0d3cd652905ab82c658",
+      "expected_pieces": 286,
+      "reuse_only": true
+    },
+    {
+      "id": "Fox_18stud",
+      "name": "狐狸 18 凸点版",
+      "studs": 18,
+      "input": "inputs/team/Fox_18stud/model.mpd",
+      "sha256": "f6133d6db3fd14c90c33db0f3d785260564de481a4145e5fa031dc0845980924",
+      "expected_pieces": 336,
+      "reuse_only": true
+    },
+    {
+      "id": "Fox_24stud",
+      "name": "狐狸 24 凸点版",
+      "studs": 24,
+      "input": "inputs/team/Fox_24stud/model.mpd",
+      "sha256": "cedce163d44cf339095acd1494a82d2e2c9316696c54d890ad4b7ef940962402",
+      "expected_pieces": 483,
+      "reuse_only": true
+    },
+    {
+      "id": "Orange_14stud",
+      "name": "橙子 14 凸点版",
+      "studs": 14,
+      "input": "inputs/team/Orange_14stud/model.mpd",
+      "sha256": "54fc11e26eb10218f51462ba691894951b8a6c7c60be60f542c05ca12a278e91",
+      "expected_pieces": 587,
+      "reuse_only": true
+    },
+    {
+      "id": "Fox_27stud",
+      "name": "狐狸 27 凸点版",
+      "studs": 27,
+      "input": "inputs/team/Fox_27stud/model.mpd",
+      "sha256": "3bf75d17eeaa94ce44f77da4065363faccdd2f1d348435fbe44a26fc5084d0a6",
+      "expected_pieces": 615,
+      "reuse_only": true
+    },
+    {
+      "id": "Fox_30stud",
+      "name": "狐狸 30 凸点版",
+      "studs": 30,
+      "input": "inputs/team/Fox_30stud/model.mpd",
+      "sha256": "780baf1f1795b753e42ca264abb2707cb422f9fbc3eb00eeb1c8211c5df3bfd3",
+      "expected_pieces": 697,
+      "reuse_only": true
+    },
+    {
+      "id": "Fox_32stud",
+      "name": "狐狸 32 凸点版",
+      "studs": 32,
+      "input": "inputs/team/Fox_32stud/model.mpd",
+      "sha256": "4cde70afce7e3a53a3150f102f307b996dd9f68f3dd4dd0fd7172295c57afe75",
+      "expected_pieces": 796,
+      "reuse_only": true
+    }
+  ],
+  "excluded": [
+    {
+      "model": "7ken / 原 model(1).mpd",
+      "input_sha256": "dbf917b222136797636177c8ce1a104581e050f962f94c6b04ccc1b33790d056",
+      "reason": "误打包旧版；不发布说明书"
+    },
+    {
+      "model": "Fox/lego/model.mpd",
+      "reason": "与狐狸8凸点版内容相同，按哈希去重"
+    }
+  ]
+}

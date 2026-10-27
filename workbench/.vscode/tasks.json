@@ -1,0 +1,10 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {"label": "乐高：处理新的 LDR/MPD（先说明书）", "type": "process", "command": "powershell", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/Run.ps1", "-InputModel", "${input:modelPath}"], "options": {"cwd": "${workspaceFolder}"}, "problemMatcher": []},
+    {"label": "乐高：队友成品批量测试（复用已完成结果）", "type": "process", "command": "powershell", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/Batch.ps1"], "options": {"cwd": "${workspaceFolder}"}, "problemMatcher": []},
+    {"label": "乐高：环境检查", "type": "process", "command": "powershell", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/Run.ps1", "-Mode", "check"], "options": {"cwd": "${workspaceFolder}"}, "problemMatcher": []},
+    {"label": "乐高：查看进度", "type": "process", "command": "powershell", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/Run.ps1", "-Mode", "status"], "options": {"cwd": "${workspaceFolder}"}, "problemMatcher": []}
+  ],
+  "inputs": [{"id":"modelPath","type":"promptString","description":"真实 .ldr 或 .mpd 文件的完整路径"}]
+}

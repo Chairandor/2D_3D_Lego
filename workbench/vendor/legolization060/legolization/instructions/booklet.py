@@ -1,0 +1,678 @@
+"""Instruction booklets: cover, parts list, and step pages as HTML or PDF.
+
+One :class:`Booklet` pagination model feeds two serializers, so the HTML and
+PDF versions of the same plan always have the same page count — and so does
+a booklet built without a renderer (steps get placeholder boxes instead of
+images, never fewer pages). The HTML is a single self-contained file with
+data-URI images; the PDF is drawn with reportlab's fixed-position canvas
+API precisely because flowing layouts would let content size change the
+page count.
+"""
+
+from __future__ import annotations
+
+import base64
+import html
+import io
+from dataclasses import dataclass
+from itertools import batched
+from typing import TYPE_CHECKING, Literal
+
+from reportlab.lib.pagesizes import A4, letter
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen.canvas import Canvas
+
+from legolization.color import default_palette
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from pathlib import Path
+
+    from legolization.instructions.bom import BomEntry
+    from legolization.instructions.render import StepImages
+    from legolization.instructions.sequencer import BuildStep, InstructionPlan
+
+_COVER_BOM_ROWS = 24
+_COVER_WARNING_ROWS = 4
+_PARTS_PAGE_ROWS = 40
+_WARNING_PAGE_ROWS = 20
+_PDF_MARGIN = 36.0  # ½ inch
+_PDF_CALLOUT_LINES = 8
+
+_PAGE_SIZES: dict[str, tuple[float, float]] = {"letter": letter, "a4": A4}
+
+
+@dataclass(frozen=True, slots=True)
+class ModelStats:
+    """Cover-page summary numbers for one legolized model."""
+
+    name: str
+    brick_count: int
+    mass_g: float
+    step_count: int
+    stable: bool
+    buildable: bool
+    component_count: int
+    floating_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class BookletConfig:
+    """Booklet layout knobs."""
+
+    steps_per_page: int = 2
+    page_size: Literal["letter", "a4"] = "letter"
+    title: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StepEntry:
+    """One step's slice of the booklet: verdicts, callout parts, image."""
+
+    step: BuildStep
+    parts: tuple[BomEntry, ...]
+    image_png: bytes | None
+
+
+@dataclass(frozen=True, slots=True)
+class Booklet:
+    """A fully paginated booklet, ready for any serializer."""
+
+    stats: ModelStats
+    config: BookletConfig
+    total: tuple[BomEntry, ...]
+    warning_pages: tuple[tuple[str, ...], ...]
+    overflow_parts_pages: tuple[tuple[BomEntry, ...], ...]
+    step_pages: tuple[tuple[StepEntry, ...], ...]
+    warnings: tuple[str, ...]
+
+    @property
+    def page_count(self) -> int:
+        """Cover plus warning, overflow-parts, and step pages."""
+        return (
+            1
+            + len(self.warning_pages)
+            + len(self.overflow_parts_pages)
+            + len(self.step_pages)
+        )
+
+    @property
+    def missing_steps(self) -> tuple[int, ...]:
+        """Step indices whose image failed to render.
+
+        A non-empty result makes the publication partial (exit 3):
+        markers replace the images, never placeholder pages.
+        """
+        return tuple(
+            entry.step.index
+            for page in self.step_pages
+            for entry in page
+            if entry.image_png is None
+        )
+
+
+def build_booklet(
+    plan: InstructionPlan,
+    stats: ModelStats,
+    images: StepImages,
+    *,
+    config: BookletConfig | None = None,
+) -> Booklet:
+    """Paginate a plan into a booklet; image presence never changes layout."""
+    config = config or BookletConfig()
+    warnings = _aggregate_support_warnings(plan.warnings) + images.warnings
+    if missing := [
+        index
+        for index, step in enumerate(plan.steps, start=1)
+        if index - 1 >= len(images.images) or images.images[index - 1] is None
+    ]:
+        listed = ", ".join(str(index) for index in missing)
+        marker = (
+            f"step image(s) missing for step(s) {listed} — the booklet "
+            f"carries explicit markers and the publication is partial"
+        )
+        warnings = (*warnings, marker)
+    entries = tuple(
+        StepEntry(
+            step=step,
+            parts=(plan.bom.per_step[index] if index < len(plan.bom.per_step) else ()),
+            image_png=(images.images[index] if index < len(images.images) else None),
+        )
+        for index, step in enumerate(plan.steps)
+    )
+    overflow = plan.bom.total[_COVER_BOM_ROWS:]
+    return Booklet(
+        stats=stats,
+        config=config,
+        total=plan.bom.total,
+        warning_pages=tuple(
+            tuple(rows)
+            for rows in batched(
+                warnings[_COVER_WARNING_ROWS:],
+                _WARNING_PAGE_ROWS,
+            )
+        ),
+        overflow_parts_pages=tuple(
+            tuple(rows) for rows in batched(overflow, _PARTS_PAGE_ROWS)
+        ),
+        step_pages=tuple(
+            tuple(page) for page in batched(entries, config.steps_per_page)
+        ),
+        warnings=warnings,
+    )
+
+
+def _aggregate_support_warnings(warnings: tuple[str, ...]) -> tuple[str, ...]:
+    """Collapse consecutive unstable-prefix warnings into one callout.
+
+    Seventeen "support the overhang by hand" lines for one cap section
+    read as noise; a builder needs "steps 8-16 need temporary support"
+    once. Non-consecutive or unrelated warnings pass through untouched;
+    ``plan.warnings`` itself is never rewritten (programmatic consumers
+    keep the per-step detail).
+    """
+    aggregated: list[str] = []
+    run: list[int] = []
+    run_kind: str | None = None
+
+    def flush() -> None:
+        nonlocal run_kind
+        if not run:
+            return
+        single, many = _RUN_TEXTS[run_kind or "support"]
+        template = single if len(run) == 1 else many
+        aggregated.append(template.format(first=run[0], last=run[-1], count=len(run)))
+        run.clear()
+        run_kind = None
+
+    for warning in warnings:
+        entry = _classify_step_warning(warning)
+        if entry is not None:
+            step, kind = entry
+            if run and kind == run_kind and step == run[-1] + 1:
+                run.append(step)
+                continue
+            flush()
+            run.append(step)
+            run_kind = kind
+            continue
+        flush()
+        aggregated.append(warning)
+    flush()
+    return tuple(aggregated)
+
+
+_RUN_TEXTS = {
+    "support": (
+        "step {first}: temporary support needed while building (unstable prefix)",
+        (
+            "steps {first}-{last}: temporary support needed while "
+            "building ({count} unstable prefixes)"
+        ),
+    ),
+    "press": (
+        "step {first}: press bricks home gently (insertion-fragile)",
+        (
+            "steps {first}-{last}: press bricks home gently "
+            "({count} insertion-fragile steps)"
+        ),
+    ),
+}
+
+
+def _classify_step_warning(warning: str) -> tuple[int, str] | None:
+    """(step number, run kind) for aggregatable warnings, else None."""
+    if not warning.startswith("step "):
+        return None
+    head = warning.removeprefix("step ").split(":", 1)[0]
+    if not head.isdigit():
+        return None
+    if "prefix unstable" in warning:
+        return int(head), "support"
+    if "insertion-fragile" in warning:
+        return int(head), "press"
+    return None
+
+
+def validate_booklet_path(path: Path) -> None:
+    """Reject unsupported booklet destinations before other artifacts are written."""
+    if path.suffix.lower() not in {".html", ".pdf"}:
+        suffix = path.suffix.lower()
+        msg = f"unsupported booklet format {suffix!r} (expected .html or .pdf)"
+        raise ValueError(msg)
+
+
+def write_booklet(
+    plan: InstructionPlan,
+    stats: ModelStats,
+    images: StepImages,
+    path: Path,
+    *,
+    config: BookletConfig | None = None,
+) -> Booklet:
+    """Build the booklet and write it in the format the suffix picks."""
+    validate_booklet_path(path)
+    booklet = build_booklet(plan, stats, images, config=config)
+    if path.suffix.lower() == ".html":
+        path.write_text(booklet_html(booklet), encoding="utf-8")
+    else:
+        write_booklet_pdf(booklet, path)
+    return booklet
+
+
+# --- HTML ---
+
+_CSS = """\
+* { box-sizing: border-box; margin: 0; }
+body { font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+       color: #1a1a1a; }
+@page { size: {page_size}; margin: 12mm; }
+.page { page-break-after: always; padding: 24px; max-width: 800px;
+        margin: 0 auto; }
+h1 { font-size: 2em; margin-bottom: 12px; }
+h2 { font-size: 1.2em; margin: 16px 0 8px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 3px 10px 3px 0; font-size: 0.9em; }
+thead th { border-bottom: 1px solid #999; }
+.stats td:first-child { color: #666; }
+.warnings { background: #fff4e5; border: 1px solid #f0c36d; padding: 8px;
+            margin: 12px 0; font-size: 0.9em; }
+.step { border: 1px solid #ddd; border-radius: 8px; padding: 12px;
+        margin-bottom: 16px; }
+.step h2 { margin-top: 0; }
+.badge { font-size: 0.75em; padding: 2px 8px; border-radius: 8px;
+         vertical-align: middle; margin-left: 8px; }
+.badge.unstable { background: #fdd; color: #900; }
+.badge.rotate { background: #def; color: #036; }
+.badge.subassembly { background: #e8f5e9; color: #1b5e20; }
+.callout { background: #e8f5e9; border: 1px solid #a5d6a7; padding: 8px;
+           margin: 8px 0; font-size: 0.9em; }
+.step img { max-width: 100%; display: block; margin: 8px 0; }
+.placeholder { border: 1px dashed #bbb; color: #888; padding: 40px;
+               text-align: center; margin: 8px 0; }
+.swatch { display: inline-block; width: 0.9em; height: 0.9em;
+          border: 1px solid #999; margin-right: 6px;
+          vertical-align: -0.1em; }
+"""
+
+
+def booklet_html(booklet: Booklet) -> str:
+    """Serialize the booklet as one self-contained HTML document."""
+    title = html.escape(booklet.config.title or booklet.stats.name)
+    lines = [
+        "<!DOCTYPE html>",
+        '<html lang="en">',
+        "<head>",
+        '<meta charset="utf-8">',
+        f"<title>{title}</title>",
+        "<style>",
+        _CSS.replace("{page_size}", booklet.config.page_size),
+        "</style>",
+        "</head>",
+        "<body>",
+        *_html_cover(booklet, title),
+    ]
+    for warnings in booklet.warning_pages:
+        lines.extend(_html_warnings_page(warnings))
+    for rows in booklet.overflow_parts_pages:
+        lines.append('<div class="page parts">')
+        lines.append("<h2>Parts (continued)</h2>")
+        lines.extend(_html_parts_table(rows))
+        lines.append("</div>")
+    for page in booklet.step_pages:
+        lines.append('<div class="page steps">')
+        for entry in page:
+            lines.extend(_html_step(entry))
+        lines.append("</div>")
+    lines += ["</body>", "</html>"]
+    return "\n".join(lines) + "\n"
+
+
+def _html_cover(booklet: Booklet, title: str) -> list[str]:
+    stats = booklet.stats
+    rows = [
+        ("Bricks", f"{stats.brick_count}"),
+        ("Mass", f"{stats.mass_g:.1f} g"),
+        ("Steps", f"{stats.step_count}"),
+        ("Stable", "yes" if stats.stable else "NO"),
+        ("Buildable", "yes" if stats.buildable else "NO"),
+    ]
+    if stats.component_count != 1 or stats.floating_count:
+        rows.append(
+            (
+                "Connectivity",
+                f"{stats.component_count} components, {stats.floating_count} floating",
+            )
+        )
+    lines = [
+        '<div class="page cover">',
+        f"<h1>{title}</h1>",
+        '<table class="stats"><tbody>',
+        *(
+            f"<tr><td>{html.escape(label)}</td><td>{html.escape(value)}</td></tr>"
+            for label, value in rows
+        ),
+        "</tbody></table>",
+    ]
+    if cover_warnings := booklet.warnings[:_COVER_WARNING_ROWS]:
+        lines.append('<div class="warnings"><ul>')
+        lines.extend(f"<li>{html.escape(warning)}</li>" for warning in cover_warnings)
+        if booklet.warning_pages:
+            remaining = len(booklet.warnings) - len(cover_warnings)
+            lines.append(f"<li>{remaining} more warning(s) on the next page …</li>")
+        lines.append("</ul></div>")
+    lines.append("<h2>Parts</h2>")
+    lines.extend(_html_parts_table(booklet.total[:_COVER_BOM_ROWS]))
+    if len(booklet.total) > _COVER_BOM_ROWS:
+        lines.append("<p>continued on the next page …</p>")
+    lines.append("</div>")
+    return lines
+
+
+def _html_warnings_page(warnings: tuple[str, ...]) -> list[str]:
+    lines = [
+        '<div class="page warning-list">',
+        "<h2>Warnings (continued)</h2>",
+        '<div class="warnings"><ul>',
+    ]
+    lines.extend(f"<li>{html.escape(warning)}</li>" for warning in warnings)
+    lines.extend(["</ul></div>", "</div>"])
+    return lines
+
+
+def _html_parts_table(rows: tuple[BomEntry, ...]) -> list[str]:
+    lines = [
+        "<table>",
+        (
+            "<thead><tr><th>qty</th><th>part</th><th>ldraw</th>"
+            "<th>colour</th><th>mass</th></tr></thead>"
+        ),
+        "<tbody>",
+    ]
+    lines.extend(
+        "<tr>"
+        f"<td>{entry.quantity}</td>"
+        f"<td>{html.escape(entry.part_key)}</td>"
+        f"<td>{html.escape(entry.ldraw_part)}</td>"
+        f"<td>{_html_swatch(entry.colour_code)}{html.escape(entry.colour_name)}</td>"
+        f"<td>{entry.mass_g:.1f} g</td>"
+        "</tr>"
+        for entry in rows
+    )
+    lines += ["</tbody>", "</table>"]
+    return lines
+
+
+def _html_step(entry: StepEntry) -> list[str]:
+    step = entry.step
+    badges = ""
+    if not step.prefix_stable:
+        label = (
+            "unstable — support while attaching"
+            if step.attaches is not None
+            else "unstable — support by hand"
+        )
+        badges += f'<span class="badge unstable">{label}</span>'
+    if step.rotstep is not None:
+        badges += '<span class="badge rotate">rotate the model</span>'
+    if step.submodel is not None:
+        badges += (
+            f'<span class="badge subassembly">subassembly {step.submodel} '
+            "— build on the table</span>"
+        )
+    title = f"Step {step.index}"
+    if step.attaches is not None:
+        title = f"Step {step.index} — attach subassembly {step.attaches}"
+    lines = [
+        f'<section class="step" id="step-{step.index}">',
+        f"<h2>{title}{badges}</h2>",
+    ]
+    if entry.image_png is not None:
+        encoded = base64.b64encode(entry.image_png).decode("ascii")
+        lines.append(
+            f'<img alt="Step {step.index}" src="data:image/png;base64,{encoded}">'
+        )
+    else:
+        lines.append(
+            f'<div class="placeholder">Step {step.index} image missing — '
+            "rendering failed for this step</div>"
+        )
+    if step.attaches is not None:
+        lines.append(
+            f'<div class="callout">Requires subassembly {step.attaches} — '
+            "built in the preceding steps.</div>"
+        )
+    if entry.parts:
+        lines.extend(_html_parts_table(entry.parts))
+    lines.append("</section>")
+    return lines
+
+
+def _html_swatch(colour_code: int) -> str:
+    return f'<span class="swatch" style="background:{_swatch_hex(colour_code)}"></span>'
+
+
+def _swatch_hex(colour_code: int) -> str:
+    try:
+        red, green, blue = default_palette().rgb_of(colour_code)
+    except ValueError:
+        return "#808080"
+    return f"#{red:02x}{green:02x}{blue:02x}"
+
+
+# --- PDF ---
+
+
+def write_booklet_pdf(booklet: Booklet, path: Path) -> None:
+    """Draw the booklet with reportlab; one canvas page per booklet page."""
+    width, height = _PAGE_SIZES[booklet.config.page_size]
+    canvas = Canvas(str(path), pagesize=(width, height))
+    canvas.setTitle(booklet.config.title or booklet.stats.name)
+    _pdf_cover(canvas, booklet, height=height)
+    canvas.showPage()
+    for warnings in booklet.warning_pages:
+        _pdf_warnings_page(canvas, warnings, height=height)
+        canvas.showPage()
+    for rows in booklet.overflow_parts_pages:
+        _pdf_parts_page(canvas, rows, height=height)
+        canvas.showPage()
+    for page in booklet.step_pages:
+        _pdf_step_page(canvas, booklet, page, width=width, height=height)
+        canvas.showPage()
+    canvas.save()
+
+
+def _pdf_cover(canvas: Canvas, booklet: Booklet, *, height: float) -> None:
+    stats = booklet.stats
+    cursor = height - _PDF_MARGIN - 24
+    canvas.setFont("Helvetica-Bold", 22)
+    canvas.drawString(_PDF_MARGIN, cursor, booklet.config.title or stats.name)
+    cursor -= 30
+    canvas.setFont("Helvetica", 10)
+    summary = (
+        f"bricks: {stats.brick_count}   mass: {stats.mass_g:.1f} g   "
+        f"steps: {stats.step_count}   "
+        f"stable: {'yes' if stats.stable else 'NO'}   "
+        f"buildable: {'yes' if stats.buildable else 'NO'}"
+    )
+    canvas.drawString(_PDF_MARGIN, cursor, summary)
+    cursor -= 14
+    cover_warnings = booklet.warnings[:_COVER_WARNING_ROWS]
+    for warning in cover_warnings:
+        canvas.drawString(_PDF_MARGIN, cursor, f"warning: {warning}"[:110])
+        cursor -= 12
+    if booklet.warning_pages:
+        remaining = len(booklet.warnings) - len(cover_warnings)
+        canvas.drawString(
+            _PDF_MARGIN,
+            cursor,
+            f"{remaining} more warning(s) on the next page ...",
+        )
+        cursor -= 12
+    cursor -= 10
+    canvas.setFont("Helvetica-Bold", 12)
+    canvas.drawString(_PDF_MARGIN, cursor, "Parts")
+    cursor -= 16
+    _pdf_parts_rows(canvas, booklet.total[:_COVER_BOM_ROWS], cursor=cursor)
+    if len(booklet.total) > _COVER_BOM_ROWS:
+        canvas.setFont("Helvetica-Oblique", 9)
+        canvas.drawString(_PDF_MARGIN, _PDF_MARGIN, "continued on the next page …")
+
+
+def _pdf_warnings_page(
+    canvas: Canvas,
+    warnings: tuple[str, ...],
+    *,
+    height: float,
+) -> None:
+    canvas.setFont("Helvetica-Bold", 12)
+    cursor = height - _PDF_MARGIN - 12
+    canvas.drawString(_PDF_MARGIN, cursor, "Warnings (continued)")
+    cursor -= 18
+    canvas.setFont("Helvetica", 9)
+    for warning in warnings:
+        canvas.drawString(_PDF_MARGIN, cursor, f"warning: {warning}"[:110])
+        cursor -= 12
+
+
+def _pdf_parts_page(
+    canvas: Canvas,
+    rows: tuple[BomEntry, ...],
+    *,
+    height: float,
+) -> None:
+    canvas.setFont("Helvetica-Bold", 12)
+    cursor = height - _PDF_MARGIN - 12
+    canvas.drawString(_PDF_MARGIN, cursor, "Parts (continued)")
+    _pdf_parts_rows(canvas, rows, cursor=cursor - 16)
+
+
+def _pdf_parts_rows(
+    canvas: Canvas,
+    rows: tuple[BomEntry, ...],
+    *,
+    cursor: float,
+) -> None:
+    canvas.setFont("Helvetica", 9)
+    for entry in rows:
+        canvas.drawString(_PDF_MARGIN, cursor, _part_line(entry))
+        cursor -= 12
+
+
+def _pdf_step_page(
+    canvas: Canvas,
+    booklet: Booklet,
+    page: tuple[StepEntry, ...],
+    *,
+    width: float,
+    height: float,
+) -> None:
+    slots = booklet.config.steps_per_page
+    slot_height = (height - 2 * _PDF_MARGIN) / slots
+    for position, entry in enumerate(page):
+        top = height - _PDF_MARGIN - position * slot_height
+        _pdf_step_slot(
+            canvas,
+            entry,
+            top=top,
+            slot_height=slot_height,
+            width=width,
+        )
+
+
+def _pdf_step_slot(
+    canvas: Canvas,
+    entry: StepEntry,
+    *,
+    top: float,
+    slot_height: float,
+    width: float,
+) -> None:
+    step = entry.step
+    label = f"Step {step.index}"
+    if step.attaches is not None:
+        label += f" — attach subassembly {step.attaches}"
+    elif step.submodel is not None:
+        label += f" — subassembly {step.submodel} (build on the table)"
+    if not step.prefix_stable:
+        label += (
+            "   [unstable — support while attaching]"
+            if step.attaches is not None
+            else "   [unstable — support by hand]"
+        )
+    if step.rotstep is not None:
+        label += "   [rotate the model]"
+    canvas.setFont("Helvetica-Bold", 14)
+    canvas.drawString(_PDF_MARGIN, top - 16, label)
+
+    image_top = top - 28
+    image_height = slot_height - 40
+    image_width = (width - 2 * _PDF_MARGIN) * 0.62
+    if entry.image_png is not None:
+        canvas.drawImage(
+            ImageReader(io.BytesIO(entry.image_png)),
+            _PDF_MARGIN,
+            image_top - image_height,
+            width=image_width,
+            height=image_height,
+            preserveAspectRatio=True,
+            anchor="c",
+        )
+    else:
+        canvas.rect(
+            _PDF_MARGIN,
+            image_top - image_height,
+            image_width,
+            image_height,
+        )
+        canvas.setFont("Helvetica-Oblique", 9)
+        canvas.drawCentredString(
+            _PDF_MARGIN + image_width / 2,
+            image_top - image_height / 2,
+            f"Step {entry.step.index} image missing — rendering failed",
+        )
+
+    callout_x = _PDF_MARGIN + image_width + 16
+    cursor = image_top - 10
+    canvas.setFont("Helvetica", 9)
+    for part in entry.parts[:_PDF_CALLOUT_LINES]:
+        canvas.drawString(
+            callout_x, cursor, f"{part.quantity} x {part.part_key} {part.colour_name}"
+        )
+        cursor -= 12
+    if len(entry.parts) > _PDF_CALLOUT_LINES:
+        remaining = len(entry.parts) - _PDF_CALLOUT_LINES
+        canvas.drawString(callout_x, cursor, f"+ {remaining} more part lines")
+
+
+def _part_line(entry: BomEntry) -> str:
+    return (
+        f"{entry.quantity:>4}  {entry.part_key:<14} {entry.ldraw_part:<10} "
+        f"{entry.colour_name}  {entry.mass_g:.1f} g"
+    )
+
+
+_LETTER_TERRITORIES = frozenset(
+    ("US", "CA", "MX", "PH", "CL", "CO", "CR", "GT", "PA", "DO", "SV", "VE", "PR")
+)
+
+
+def default_page_size(env: Mapping[str, str] | None = None) -> Literal["letter", "a4"]:
+    """Infer Letter or A4 from the locale, falling back to Letter.
+
+    Reads the territory from ``LC_PAPER``/``LC_ALL``/``LC_CTYPE``/``LANG``
+    (``en_US.UTF-8`` -> ``US``); unknown or unset locales fall back to
+    Letter per the confirmed booklet policy.
+    """
+    import os  # noqa: PLC0415
+    import re  # noqa: PLC0415
+
+    environment = os.environ if env is None else env
+    for variable in ("LC_PAPER", "LC_ALL", "LC_CTYPE", "LANG"):
+        value = environment.get(variable)
+        if not value:
+            continue
+        if match := re.match(r"[a-z]{2,3}[-_]([A-Za-z]{2})", value):
+            territory = match.group(1).upper()
+            return "letter" if territory in _LETTER_TERRITORIES else "a4"
+    return "letter"

@@ -1,0 +1,26 @@
+{
+  "violations": [],
+  "cold_prefix_count": 12,
+  "earliest_failure": {
+    "step_index": 4,
+    "action": "place",
+    "occurrence_ids": [
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18
+    ],
+    "unstable_ids": [
+      12,
+      13,
+      15,
+      16,
+      17,
+      18
+    ],
+    "max_score": 1.0
+  }
+}

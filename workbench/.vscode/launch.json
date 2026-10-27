@@ -1,0 +1,7 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {"name": "查看批量清单（不求解）", "type": "debugpy", "request": "launch", "program": "${workspaceFolder}/batch.py", "args": ["--manifest", "${workspaceFolder}/config/batch_manifest.json", "--config", "${workspaceFolder}/config/local.json", "--inventory-only"], "cwd": "${workspaceFolder}", "console": "integratedTerminal"},
+    {"name": "仅环境检查", "type": "debugpy", "request": "launch", "program": "${workspaceFolder}/run.py", "args": ["--mode", "check"], "cwd": "${workspaceFolder}", "console": "integratedTerminal"}
+  ]
+}

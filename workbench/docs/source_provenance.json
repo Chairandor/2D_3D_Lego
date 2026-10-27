@@ -1,0 +1,19 @@
+{
+  "source_zip": "legolization_0.6.0_source.zip",
+  "source_zip_sha256": "d9a7aaf6c11e30aaa529c61ec79dd48abfa8c5232863c4ab805573c4054f688f",
+  "source_type": "已安装包目录的源码快照；非完整上游仓库",
+  "upstream_source_unchanged": true,
+  "python_source_files": 130,
+  "preserved_data_files": 5,
+  "packaging_added": "vendor/legolization060/pyproject.toml：本地安装包装，不修改源码",
+  "reused_adapter_packages": [
+    "Legolization_060_Continuation.zip",
+    "Lego_Bunny_MPD_Booklet_Suite.zip",
+    "Lego_Booklet_Display_Patch_v11.zip"
+  ],
+  "recovered_checkpoints": {
+    "bunny": "用户上传 Review_For_Chat.zip",
+    "chicken": "用户上传 Chicken_Review_20261009_150814.zip"
+  },
+  "licence_note": "源 ZIP 未含上游许可证，未擅自补写；字体许可证在 assets/fonts；当前交付用于团队既有课程工程。"
+}

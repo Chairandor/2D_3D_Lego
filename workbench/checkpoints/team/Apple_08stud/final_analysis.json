@@ -1,0 +1,1754 @@
+{
+  "final_stability": {
+    "stable": true,
+    "status": "optimal",
+    "objective": 0.00031076129971149906,
+    "max_score": 0.024081681001543377,
+    "unstable_ids": []
+  },
+  "topology": {
+    "component_count": 1,
+    "floating_count": 0,
+    "floating_ids": []
+  },
+  "per_brick": {
+    "0": {
+      "brick_id": 0,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "1": {
+      "brick_id": 1,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "2": {
+      "brick_id": 2,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "3": {
+      "brick_id": 3,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "4": {
+      "brick_id": 4,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "5": {
+      "brick_id": 5,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "6": {
+      "brick_id": 6,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "7": {
+      "brick_id": 7,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "8": {
+      "brick_id": 8,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "9": {
+      "brick_id": 9,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "10": {
+      "brick_id": 10,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "11": {
+      "brick_id": 11,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "12": {
+      "brick_id": 12,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "13": {
+      "brick_id": 13,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "14": {
+      "brick_id": 14,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "15": {
+      "brick_id": 15,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "16": {
+      "brick_id": 16,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "17": {
+      "brick_id": 17,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "18": {
+      "brick_id": 18,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "19": {
+      "brick_id": 19,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "20": {
+      "brick_id": 20,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "21": {
+      "brick_id": 21,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "22": {
+      "brick_id": 22,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "23": {
+      "brick_id": 23,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "24": {
+      "brick_id": 24,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "25": {
+      "brick_id": 25,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "26": {
+      "brick_id": 26,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "27": {
+      "brick_id": 27,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "28": {
+      "brick_id": 28,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "29": {
+      "brick_id": 29,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "30": {
+      "brick_id": 30,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "31": {
+      "brick_id": 31,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "32": {
+      "brick_id": 32,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "33": {
+      "brick_id": 33,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "34": {
+      "brick_id": 34,
+      "score": 0.007200000000000002,
+      "drag_max": 0.007056000000000002,
+      "in_equilibrium": true
+    },
+    "35": {
+      "brick_id": 35,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "36": {
+      "brick_id": 36,
+      "score": 0.0010000000000000002,
+      "drag_max": 0.0009800000000000002,
+      "in_equilibrium": true
+    },
+    "37": {
+      "brick_id": 37,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "38": {
+      "brick_id": 38,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "39": {
+      "brick_id": 39,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "40": {
+      "brick_id": 40,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "41": {
+      "brick_id": 41,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "42": {
+      "brick_id": 42,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "43": {
+      "brick_id": 43,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "44": {
+      "brick_id": 44,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "45": {
+      "brick_id": 45,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "46": {
+      "brick_id": 46,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "47": {
+      "brick_id": 47,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "48": {
+      "brick_id": 48,
+      "score": 0.00045,
+      "drag_max": 0.000441,
+      "in_equilibrium": true
+    },
+    "49": {
+      "brick_id": 49,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "50": {
+      "brick_id": 50,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "51": {
+      "brick_id": 51,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "52": {
+      "brick_id": 52,
+      "score": 0.00044166666666666703,
+      "drag_max": 0.0004328333333333337,
+      "in_equilibrium": true
+    },
+    "53": {
+      "brick_id": 53,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "54": {
+      "brick_id": 54,
+      "score": 0.0014,
+      "drag_max": 0.001372,
+      "in_equilibrium": true
+    },
+    "55": {
+      "brick_id": 55,
+      "score": 0.0019802052130109076,
+      "drag_max": 0.0019406011087506894,
+      "in_equilibrium": true
+    },
+    "56": {
+      "brick_id": 56,
+      "score": 0.00095,
+      "drag_max": 0.000931,
+      "in_equilibrium": true
+    },
+    "57": {
+      "brick_id": 57,
+      "score": 0.0006,
+      "drag_max": 0.000588,
+      "in_equilibrium": true
+    },
+    "58": {
+      "brick_id": 58,
+      "score": 0.012338333333333338,
+      "drag_max": 0.012091566666666671,
+      "in_equilibrium": true
+    },
+    "59": {
+      "brick_id": 59,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "60": {
+      "brick_id": 60,
+      "score": 0.006840000000000002,
+      "drag_max": 0.006703200000000002,
+      "in_equilibrium": true
+    },
+    "61": {
+      "brick_id": 61,
+      "score": 0.0012600000000000003,
+      "drag_max": 0.0012348000000000003,
+      "in_equilibrium": true
+    },
+    "62": {
+      "brick_id": 62,
+      "score": 0.005178611688615977,
+      "drag_max": 0.0050750394548436575,
+      "in_equilibrium": true
+    },
+    "63": {
+      "brick_id": 63,
+      "score": 0.0009500000000000001,
+      "drag_max": 0.0009310000000000001,
+      "in_equilibrium": true
+    },
+    "64": {
+      "brick_id": 64,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "65": {
+      "brick_id": 65,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "66": {
+      "brick_id": 66,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "67": {
+      "brick_id": 67,
+      "score": 0.001161760722629999,
+      "drag_max": 0.001138525508177399,
+      "in_equilibrium": true
+    },
+    "68": {
+      "brick_id": 68,
+      "score": 0.00145,
+      "drag_max": 0.001421,
+      "in_equilibrium": true
+    },
+    "69": {
+      "brick_id": 69,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "70": {
+      "brick_id": 70,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "71": {
+      "brick_id": 71,
+      "score": 0.0009500000000000001,
+      "drag_max": 0.0009310000000000001,
+      "in_equilibrium": true
+    },
+    "72": {
+      "brick_id": 72,
+      "score": 0.024081681001543377,
+      "drag_max": 0.023600047381512508,
+      "in_equilibrium": true
+    },
+    "73": {
+      "brick_id": 73,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "74": {
+      "brick_id": 74,
+      "score": 0.01580494464135148,
+      "drag_max": 0.015488845748524452,
+      "in_equilibrium": true
+    },
+    "75": {
+      "brick_id": 75,
+      "score": 0.0033967724672089314,
+      "drag_max": 0.003328837017864753,
+      "in_equilibrium": true
+    },
+    "76": {
+      "brick_id": 76,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "77": {
+      "brick_id": 77,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "78": {
+      "brick_id": 78,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "79": {
+      "brick_id": 79,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "80": {
+      "brick_id": 80,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "81": {
+      "brick_id": 81,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "82": {
+      "brick_id": 82,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "83": {
+      "brick_id": 83,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "84": {
+      "brick_id": 84,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "85": {
+      "brick_id": 85,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "86": {
+      "brick_id": 86,
+      "score": 0.001083418838754544,
+      "drag_max": 0.0010617504619794532,
+      "in_equilibrium": true
+    },
+    "87": {
+      "brick_id": 87,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "88": {
+      "brick_id": 88,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "89": {
+      "brick_id": 89,
+      "score": 0.00036097665522550986,
+      "drag_max": 0.00035375712212099963,
+      "in_equilibrium": true
+    },
+    "90": {
+      "brick_id": 90,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "91": {
+      "brick_id": 91,
+      "score": 0.0008404244472430311,
+      "drag_max": 0.0008236159582981705,
+      "in_equilibrium": true
+    },
+    "92": {
+      "brick_id": 92,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "93": {
+      "brick_id": 93,
+      "score": 0.0006083333333333334,
+      "drag_max": 0.0005961666666666667,
+      "in_equilibrium": true
+    },
+    "94": {
+      "brick_id": 94,
+      "score": 0.0008111111111111112,
+      "drag_max": 0.0007948888888888889,
+      "in_equilibrium": true
+    },
+    "95": {
+      "brick_id": 95,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "96": {
+      "brick_id": 96,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "97": {
+      "brick_id": 97,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "98": {
+      "brick_id": 98,
+      "score": 0.02169207709228709,
+      "drag_max": 0.021258235550441346,
+      "in_equilibrium": true
+    },
+    "99": {
+      "brick_id": 99,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "100": {
+      "brick_id": 100,
+      "score": 0.0033013013321439716,
+      "drag_max": 0.003235275305501092,
+      "in_equilibrium": true
+    },
+    "101": {
+      "brick_id": 101,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "102": {
+      "brick_id": 102,
+      "score": 0.008218856178841947,
+      "drag_max": 0.008054479055265108,
+      "in_equilibrium": true
+    },
+    "103": {
+      "brick_id": 103,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "104": {
+      "brick_id": 104,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "105": {
+      "brick_id": 105,
+      "score": 0.0009229931847808079,
+      "drag_max": 0.0009045333210851918,
+      "in_equilibrium": true
+    },
+    "106": {
+      "brick_id": 106,
+      "score": 0.001083418838754547,
+      "drag_max": 0.001061750461979456,
+      "in_equilibrium": true
+    },
+    "107": {
+      "brick_id": 107,
+      "score": 0.003819538270725458,
+      "drag_max": 0.003743147505310949,
+      "in_equilibrium": true
+    },
+    "108": {
+      "brick_id": 108,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "109": {
+      "brick_id": 109,
+      "score": 0.0045067367906319366,
+      "drag_max": 0.004416602054819298,
+      "in_equilibrium": true
+    },
+    "110": {
+      "brick_id": 110,
+      "score": 0.0010583333333333334,
+      "drag_max": 0.0010371666666666667,
+      "in_equilibrium": true
+    },
+    "111": {
+      "brick_id": 111,
+      "score": 0.0012691993776127223,
+      "drag_max": 0.0012438153900604678,
+      "in_equilibrium": true
+    },
+    "112": {
+      "brick_id": 112,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "113": {
+      "brick_id": 113,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "114": {
+      "brick_id": 114,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "115": {
+      "brick_id": 115,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "116": {
+      "brick_id": 116,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "117": {
+      "brick_id": 117,
+      "score": 0.010216168297516658,
+      "drag_max": 0.010011844931566325,
+      "in_equilibrium": true
+    },
+    "118": {
+      "brick_id": 118,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "119": {
+      "brick_id": 119,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "120": {
+      "brick_id": 120,
+      "score": 0.003750080212678735,
+      "drag_max": 0.0036750786084251605,
+      "in_equilibrium": true
+    },
+    "121": {
+      "brick_id": 121,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "122": {
+      "brick_id": 122,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "123": {
+      "brick_id": 123,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "124": {
+      "brick_id": 124,
+      "score": 0.0006253176483822804,
+      "drag_max": 0.0006128112954146348,
+      "in_equilibrium": true
+    },
+    "125": {
+      "brick_id": 125,
+      "score": 0.004574307734884564,
+      "drag_max": 0.004482821580186873,
+      "in_equilibrium": true
+    },
+    "126": {
+      "brick_id": 126,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "127": {
+      "brick_id": 127,
+      "score": 0.0015905102228287882,
+      "drag_max": 0.0015587000183722125,
+      "in_equilibrium": true
+    },
+    "128": {
+      "brick_id": 128,
+      "score": 0.004319538270725458,
+      "drag_max": 0.004233147505310949,
+      "in_equilibrium": true
+    },
+    "129": {
+      "brick_id": 129,
+      "score": 0.006318314696489673,
+      "drag_max": 0.006191948402559879,
+      "in_equilibrium": true
+    },
+    "130": {
+      "brick_id": 130,
+      "score": 0.00044761718559501275,
+      "drag_max": 0.0004386648418831125,
+      "in_equilibrium": true
+    },
+    "131": {
+      "brick_id": 131,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "132": {
+      "brick_id": 132,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "133": {
+      "brick_id": 133,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "134": {
+      "brick_id": 134,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "135": {
+      "brick_id": 135,
+      "score": 0.0005298625155643223,
+      "drag_max": 0.0005192652652530359,
+      "in_equilibrium": true
+    },
+    "136": {
+      "brick_id": 136,
+      "score": 0.004225192487679363,
+      "drag_max": 0.004140688637925776,
+      "in_equilibrium": true
+    },
+    "137": {
+      "brick_id": 137,
+      "score": 0.0019639391940871383,
+      "drag_max": 0.0019246604102053954,
+      "in_equilibrium": true
+    },
+    "138": {
+      "brick_id": 138,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "139": {
+      "brick_id": 139,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "140": {
+      "brick_id": 140,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "141": {
+      "brick_id": 141,
+      "score": 0.003535983220070766,
+      "drag_max": 0.0034652635556693505,
+      "in_equilibrium": true
+    },
+    "142": {
+      "brick_id": 142,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "143": {
+      "brick_id": 143,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "144": {
+      "brick_id": 144,
+      "score": 0.004035522392846175,
+      "drag_max": 0.003954811944989251,
+      "in_equilibrium": true
+    },
+    "145": {
+      "brick_id": 145,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "146": {
+      "brick_id": 146,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "147": {
+      "brick_id": 147,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "148": {
+      "brick_id": 148,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "149": {
+      "brick_id": 149,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "150": {
+      "brick_id": 150,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "151": {
+      "brick_id": 151,
+      "score": 0.0054440586595651905,
+      "drag_max": 0.0053351774863738865,
+      "in_equilibrium": true
+    },
+    "152": {
+      "brick_id": 152,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "153": {
+      "brick_id": 153,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "154": {
+      "brick_id": 154,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "155": {
+      "brick_id": 155,
+      "score": 0.0018169188499057643,
+      "drag_max": 0.001780580472907649,
+      "in_equilibrium": true
+    },
+    "156": {
+      "brick_id": 156,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "157": {
+      "brick_id": 157,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "158": {
+      "brick_id": 158,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "159": {
+      "brick_id": 159,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "160": {
+      "brick_id": 160,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "161": {
+      "brick_id": 161,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "162": {
+      "brick_id": 162,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "163": {
+      "brick_id": 163,
+      "score": 0.0034616133708171835,
+      "drag_max": 0.00339238110340084,
+      "in_equilibrium": true
+    },
+    "164": {
+      "brick_id": 164,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "165": {
+      "brick_id": 165,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "166": {
+      "brick_id": 166,
+      "score": 0.00013333333333333364,
+      "drag_max": 0.00013066666666666695,
+      "in_equilibrium": true
+    },
+    "167": {
+      "brick_id": 167,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "168": {
+      "brick_id": 168,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "169": {
+      "brick_id": 169,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "170": {
+      "brick_id": 170,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "171": {
+      "brick_id": 171,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "172": {
+      "brick_id": 172,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "173": {
+      "brick_id": 173,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "174": {
+      "brick_id": 174,
+      "score": 0.0014133104282664352,
+      "drag_max": 0.0013850442197011065,
+      "in_equilibrium": true
+    },
+    "175": {
+      "brick_id": 175,
+      "score": 0.000580891711947185,
+      "drag_max": 0.0005692738777082413,
+      "in_equilibrium": true
+    },
+    "176": {
+      "brick_id": 176,
+      "score": 0.004292515893564446,
+      "drag_max": 0.004206665575693156,
+      "in_equilibrium": true
+    },
+    "177": {
+      "brick_id": 177,
+      "score": 0.001747233789797114,
+      "drag_max": 0.0017122891140011717,
+      "in_equilibrium": true
+    },
+    "178": {
+      "brick_id": 178,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "179": {
+      "brick_id": 179,
+      "score": 0.0090850317871289,
+      "drag_max": 0.008903331151386322,
+      "in_equilibrium": true
+    },
+    "180": {
+      "brick_id": 180,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "181": {
+      "brick_id": 181,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "182": {
+      "brick_id": 182,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "183": {
+      "brick_id": 183,
+      "score": 0.002284843529797984,
+      "drag_max": 0.002239146659202024,
+      "in_equilibrium": true
+    },
+    "184": {
+      "brick_id": 184,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "185": {
+      "brick_id": 185,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "186": {
+      "brick_id": 186,
+      "score": 0.011830218593341223,
+      "drag_max": 0.011593614221474398,
+      "in_equilibrium": true
+    },
+    "187": {
+      "brick_id": 187,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "188": {
+      "brick_id": 188,
+      "score": 0.00435991562917335,
+      "drag_max": 0.004272717316589883,
+      "in_equilibrium": true
+    },
+    "189": {
+      "brick_id": 189,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "190": {
+      "brick_id": 190,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "191": {
+      "brick_id": 191,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "192": {
+      "brick_id": 192,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "193": {
+      "brick_id": 193,
+      "score": 0.0038647134063182365,
+      "drag_max": 0.0037874191381918718,
+      "in_equilibrium": true
+    },
+    "194": {
+      "brick_id": 194,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "195": {
+      "brick_id": 195,
+      "score": 0.00030452440676873184,
+      "drag_max": 0.0002984339186333572,
+      "in_equilibrium": true
+    },
+    "196": {
+      "brick_id": 196,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "197": {
+      "brick_id": 197,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "198": {
+      "brick_id": 198,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "199": {
+      "brick_id": 199,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "200": {
+      "brick_id": 200,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "201": {
+      "brick_id": 201,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "202": {
+      "brick_id": 202,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "203": {
+      "brick_id": 203,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "204": {
+      "brick_id": 204,
+      "score": 0.001006032542358309,
+      "drag_max": 0.0009859118915111428,
+      "in_equilibrium": true
+    },
+    "205": {
+      "brick_id": 205,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "206": {
+      "brick_id": 206,
+      "score": 0.0014874999999999999,
+      "drag_max": 0.0014577499999999998,
+      "in_equilibrium": true
+    },
+    "207": {
+      "brick_id": 207,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "208": {
+      "brick_id": 208,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "209": {
+      "brick_id": 209,
+      "score": 0.0010000000000000005,
+      "drag_max": 0.0009800000000000004,
+      "in_equilibrium": true
+    },
+    "210": {
+      "brick_id": 210,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "211": {
+      "brick_id": 211,
+      "score": 0.0007003035744630961,
+      "drag_max": 0.0006862975029738342,
+      "in_equilibrium": true
+    },
+    "212": {
+      "brick_id": 212,
+      "score": 0.0013333333333333335,
+      "drag_max": 0.001306666666666667,
+      "in_equilibrium": true
+    },
+    "213": {
+      "brick_id": 213,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "214": {
+      "brick_id": 214,
+      "score": 0.0010000000000000005,
+      "drag_max": 0.0009800000000000004,
+      "in_equilibrium": true
+    },
+    "215": {
+      "brick_id": 215,
+      "score": 0.0015000000000000005,
+      "drag_max": 0.0014700000000000004,
+      "in_equilibrium": true
+    },
+    "216": {
+      "brick_id": 216,
+      "score": 0.006199517163025688,
+      "drag_max": 0.0060755268197651745,
+      "in_equilibrium": true
+    },
+    "217": {
+      "brick_id": 217,
+      "score": 0.0019500000000000003,
+      "drag_max": 0.0019110000000000004,
+      "in_equilibrium": true
+    },
+    "218": {
+      "brick_id": 218,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "219": {
+      "brick_id": 219,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "220": {
+      "brick_id": 220,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "221": {
+      "brick_id": 221,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "222": {
+      "brick_id": 222,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "223": {
+      "brick_id": 223,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "224": {
+      "brick_id": 224,
+      "score": 0.0015000000000000005,
+      "drag_max": 0.0014700000000000004,
+      "in_equilibrium": true
+    },
+    "225": {
+      "brick_id": 225,
+      "score": 0.0014500000000000003,
+      "drag_max": 0.0014210000000000004,
+      "in_equilibrium": true
+    },
+    "226": {
+      "brick_id": 226,
+      "score": 0.0007750000000000005,
+      "drag_max": 0.0007595000000000005,
+      "in_equilibrium": true
+    },
+    "227": {
+      "brick_id": 227,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "228": {
+      "brick_id": 228,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "229": {
+      "brick_id": 229,
+      "score": 0.004484594571376743,
+      "drag_max": 0.004394902679949208,
+      "in_equilibrium": true
+    },
+    "230": {
+      "brick_id": 230,
+      "score": 0.002197108961448686,
+      "drag_max": 0.0021531667822197124,
+      "in_equilibrium": true
+    },
+    "231": {
+      "brick_id": 231,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "232": {
+      "brick_id": 232,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "233": {
+      "brick_id": 233,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "234": {
+      "brick_id": 234,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "235": {
+      "brick_id": 235,
+      "score": 0.0003456478431555209,
+      "drag_max": 0.0003387348862924105,
+      "in_equilibrium": true
+    },
+    "236": {
+      "brick_id": 236,
+      "score": 0.002416693705700573,
+      "drag_max": 0.0023683598315865618,
+      "in_equilibrium": true
+    },
+    "237": {
+      "brick_id": 237,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "238": {
+      "brick_id": 238,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "239": {
+      "brick_id": 239,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "240": {
+      "brick_id": 240,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "241": {
+      "brick_id": 241,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "242": {
+      "brick_id": 242,
+      "score": 0.0010000000000000002,
+      "drag_max": 0.0009800000000000002,
+      "in_equilibrium": true
+    },
+    "243": {
+      "brick_id": 243,
+      "score": 0.0029207686257609017,
+      "drag_max": 0.0028623532532456837,
+      "in_equilibrium": true
+    },
+    "244": {
+      "brick_id": 244,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "245": {
+      "brick_id": 245,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "246": {
+      "brick_id": 246,
+      "score": 0.0007622838997174722,
+      "drag_max": 0.0007470382217231227,
+      "in_equilibrium": true
+    },
+    "247": {
+      "brick_id": 247,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "248": {
+      "brick_id": 248,
+      "score": 0.0005000000000000001,
+      "drag_max": 0.0004900000000000001,
+      "in_equilibrium": true
+    },
+    "249": {
+      "brick_id": 249,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "250": {
+      "brick_id": 250,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "251": {
+      "brick_id": 251,
+      "score": 0.0010000000000000002,
+      "drag_max": 0.0009800000000000002,
+      "in_equilibrium": true
+    },
+    "252": {
+      "brick_id": 252,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "253": {
+      "brick_id": 253,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "254": {
+      "brick_id": 254,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "255": {
+      "brick_id": 255,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "256": {
+      "brick_id": 256,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "257": {
+      "brick_id": 257,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "258": {
+      "brick_id": 258,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "259": {
+      "brick_id": 259,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "260": {
+      "brick_id": 260,
+      "score": 0.0006766393115198295,
+      "drag_max": 0.0006631065252894329,
+      "in_equilibrium": true
+    },
+    "261": {
+      "brick_id": 261,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "262": {
+      "brick_id": 262,
+      "score": 0.007879951915011469,
+      "drag_max": 0.00772235287671124,
+      "in_equilibrium": true
+    },
+    "263": {
+      "brick_id": 263,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "264": {
+      "brick_id": 264,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "265": {
+      "brick_id": 265,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "266": {
+      "brick_id": 266,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "267": {
+      "brick_id": 267,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "268": {
+      "brick_id": 268,
+      "score": 0.0002602865192213508,
+      "drag_max": 0.00025508078883692376,
+      "in_equilibrium": true
+    },
+    "269": {
+      "brick_id": 269,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "270": {
+      "brick_id": 270,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "271": {
+      "brick_id": 271,
+      "score": 0.002150000000000001,
+      "drag_max": 0.002107000000000001,
+      "in_equilibrium": true
+    },
+    "272": {
+      "brick_id": 272,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "273": {
+      "brick_id": 273,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "274": {
+      "brick_id": 274,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "275": {
+      "brick_id": 275,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "276": {
+      "brick_id": 276,
+      "score": 0.008524417030056203,
+      "drag_max": 0.00835392868945508,
+      "in_equilibrium": true
+    },
+    "277": {
+      "brick_id": 277,
+      "score": 0.00425,
+      "drag_max": 0.004165,
+      "in_equilibrium": true
+    },
+    "278": {
+      "brick_id": 278,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "279": {
+      "brick_id": 279,
+      "score": 0.0048231501890885955,
+      "drag_max": 0.004726687185306823,
+      "in_equilibrium": true
+    },
+    "280": {
+      "brick_id": 280,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "281": {
+      "brick_id": 281,
+      "score": 0.0013250000000000004,
+      "drag_max": 0.0012985000000000004,
+      "in_equilibrium": true
+    },
+    "282": {
+      "brick_id": 282,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    },
+    "283": {
+      "brick_id": 283,
+      "score": -0.0,
+      "drag_max": -0.0,
+      "in_equilibrium": true
+    },
+    "284": {
+      "brick_id": 284,
+      "score": 0.006170867113897428,
+      "drag_max": 0.006047449771619479,
+      "in_equilibrium": true
+    },
+    "285": {
+      "brick_id": 285,
+      "score": 0.0,
+      "drag_max": 0.0,
+      "in_equilibrium": true
+    }
+  },
+  "solver_config": {
+    "mode": "lp",
+    "solver": null,
+    "tol_force": 1e-06,
+    "tol_torque": 1e-07,
+    "drag_big_m": 9.8,
+    "normal_big_m": 100.0,
+    "engine": "highspy",
+    "engine_cross_check": false,
+    "boundary_margin": 0.02,
+    "rescue_direct_min_bricks": 200,
+    "torque_z": true,
+    "paper_knob_rule": true,
+    "rotate_contact_pattern": true,
+    "ground_pull": true,
+    "screen": "off",
+    "screen_fields": "restricted",
+    "screen_margin": 0.1,
+    "screen_eps": 1e-05,
+    "screen_max_iter": 20000
+  },
+  "meaning": "legolization 0.6.0 的数字静力检查；目标值不是倒塌概率；没有自动修复模型。"
+}

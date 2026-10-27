@@ -1,0 +1,24 @@
+{
+  "violations": [],
+  "cold_prefix_count": 73,
+  "earliest_failure": {
+    "step_index": 6,
+    "action": "subassembly-build",
+    "occurrence_ids": [
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26
+    ],
+    "unstable_ids": [
+      18,
+      26
+    ],
+    "max_score": 1.0
+  }
+}

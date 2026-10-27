@@ -1,0 +1,5 @@
+checkpoints/** -text
+inputs/** -text
+*.ttf binary
+*.png binary
+*.pdf binary
