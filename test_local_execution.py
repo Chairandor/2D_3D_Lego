@@ -60,7 +60,8 @@ class LocalUniTEXTests(unittest.TestCase):
         self.assertEqual(result.read_bytes(), b"glb")
         self.assertEqual([c[c.index("--phase") + 1] for c, _ in self.calls], ["stage1", "project"])
         for command, options in self.calls:
-            self.assertEqual(command[0], str(self.resources / "envs/unitex/bin/python"))
+            self.assertEqual(Path(command[0]).resolve(),
+                             (self.resources / "envs/unitex/bin/python").resolve())
             self.assertEqual(options["env"]["CUDA_VISIBLE_DEVICES"], "1")
             self.assertEqual(options["env"]["HF_HUB_OFFLINE"], "1")
 
