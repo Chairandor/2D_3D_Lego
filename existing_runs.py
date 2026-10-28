@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import time
 from pathlib import Path
@@ -17,6 +18,10 @@ ARTIFACTS = (
 
 LOCAL_EXAMPLES = {
     "fox-demo": (Path("/data/data_zxn/3D/model/Fox"), "狐狸 Fox（完整流程示例）"),
+    "fox-reviewed": (
+        Path("/data/data_zxn/2D_3D_Lego_server/runs/imported-textured_mesh-20261025-222650-417110"),
+        "狐狸 Fox（已验收的 Prox-E 去脚结果）",
+    ),
 }
 
 
@@ -61,6 +66,20 @@ def copy_run(identifier: str, destination_root: Path) -> Path:
                 output = target / origin.relative_to(source)
                 output.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(origin, output)
+        state_file = source / "ai_edit_state.json"
+        if state_file.is_file() and not state_file.is_symlink():
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            reviewed = Path(str(state.get("latest_result", ""))).resolve()
+            if reviewed.is_file() and reviewed.is_relative_to(source.resolve()):
+                relative = reviewed.relative_to(source.resolve())
+                output = target / relative
+                output.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(reviewed, output)
+                (target / "ai_edit_state.json").write_text(json.dumps({
+                    "status": "review",
+                    "latest_result": str(output),
+                    "latest_instruction": state.get("latest_instruction", ""),
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         shutil.rmtree(target)
         raise

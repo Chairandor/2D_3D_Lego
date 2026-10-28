@@ -321,7 +321,9 @@ def artifact_groups(run_dir: Path | None) -> list[dict[str, object]]:
             })
     edit_state = proxe.read_state(run_dir)
     edited = proxe.safe_run_file(run_dir, edit_state.get("latest_result"))
-    original_model = proxe.original_model(run_dir)
+    history = edit_state.get("history")
+    last_source = history[-1].get("source") if isinstance(history, list) and history and isinstance(history[-1], dict) else None
+    original_model = proxe.safe_run_file(run_dir, last_source) or proxe.original_model(run_dir)
     if edited and original_model:
         relative = original_model.relative_to(run_dir).as_posix()
         for index, group in enumerate(groups):

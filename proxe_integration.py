@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import struct
 import time
 from pathlib import Path
 
@@ -52,14 +53,35 @@ def safe_run_file(run_dir: Path, value: object) -> Path | None:
     return path if path.is_file() else None
 
 
+def _has_embedded_base_texture(path: Path) -> bool:
+    """Inspect the GLB material without loading the full mesh on every UI refresh."""
+    try:
+        with path.open("rb") as stream:
+            header = stream.read(20)
+            if len(header) != 20 or header[:4] != b"glTF" or header[16:20] != b"JSON":
+                return False
+            length = struct.unpack_from("<I", header, 12)[0]
+            document = json.loads(stream.read(length))
+        return any(
+            material.get("pbrMetallicRoughness", {}).get("baseColorTexture")
+            for material in document.get("materials", [])
+        ) and bool(document.get("images"))
+    except (OSError, ValueError, KeyError):
+        return False
+
+
 def original_model(run_dir: Path | None) -> Path | None:
     if run_dir is None:
         return None
-    for relative in ("oriented/mesh_upright.glb", "unitex/textured_mesh.glb"):
-        candidate = run_dir / relative
-        if candidate.is_file():
-            return candidate.resolve()
-    return None
+    oriented = run_dir / "oriented/mesh_upright.glb"
+    textured = run_dir / "unitex/textured_mesh.glb"
+    if oriented.is_file() and _has_embedded_base_texture(oriented):
+        return oriented.resolve()
+    if textured.is_file() and _has_embedded_base_texture(textured):
+        return textured.resolve()
+    if oriented.is_file():
+        return oriented.resolve()
+    return textured.resolve() if textured.is_file() else None
 
 
 def current_model(run_dir: Path | None) -> Path | None:
@@ -272,6 +294,7 @@ def _texture_profile(path: Path) -> dict[str, object]:
     """Summarize the dominant colored texels without assuming a shared UV atlas."""
     import numpy as np
     import trimesh
+    from PIL import Image
 
     loaded = trimesh.load(path, process=False)
     meshes = list(loaded.geometry.values()) if isinstance(loaded, trimesh.Scene) else [loaded]
@@ -304,11 +327,14 @@ def _texture_profile(path: Path) -> dict[str, object]:
     if not chosen.any():
         raise ValueError(f"模型贴图没有可比较的有效像素：{path.name}")
     selected = rgb[chosen]
+    hue = np.asarray(Image.fromarray(
+        selected.astype(np.uint8)[None, :, :], "RGB").convert("HSV"))[:, :, 0].ravel()
     return {
         "sampled_pixels": int(chosen.sum()),
         "median_rgb": np.median(selected, axis=0).round(1).tolist(),
         "median_brightness": float(np.median(selected.max(axis=1))),
         "median_saturation": float(np.median(saturation[chosen])),
+        "median_hue": float(np.median(hue)),
     }
 
 
@@ -318,17 +344,23 @@ def validate_appearance_preservation(source: Path, output: Path) -> dict[str, ob
     generated = _texture_profile(output)
     ratio = generated["median_brightness"] / max(original["median_brightness"], 1)
     saturation_shift = abs(generated["median_saturation"] - original["median_saturation"])
+    hue_shift = abs((generated["median_hue"] - original["median_hue"] + 128) % 256 - 128)
+    rgb_shift = max(abs(a - b) for a, b in zip(generated["median_rgb"], original["median_rgb"]))
     metrics = {
         "source": original,
         "output": generated,
         "brightness_ratio": round(ratio, 3),
         "saturation_shift": round(saturation_shift, 3),
-        "passed": 0.82 <= ratio <= 1.22 and saturation_shift <= 0.18,
+        "hue_shift_degrees": round(hue_shift * 360 / 256, 2),
+        "max_median_rgb_shift": round(rgb_shift, 1),
+        "passed": 0.82 <= ratio <= 1.22 and saturation_shift <= 0.18
+                  and hue_shift <= 6 and rgb_shift <= 15,
     }
     if not metrics["passed"]:
         raise ValueError(
             "原有外观明显漂移，已拒绝采用："
-            f"贴图亮度比例 {ratio:.2f}、饱和度差 {saturation_shift:.2f}"
+            f"贴图亮度比例 {ratio:.2f}、饱和度差 {saturation_shift:.2f}、"
+            f"色相差 {hue_shift * 360 / 256:.1f}°、RGB 中位差 {rgb_shift:.0f}"
         )
     return metrics
 
