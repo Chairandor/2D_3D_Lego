@@ -61,7 +61,7 @@ CHAT_TOOLS = [
 def _safe_key() -> str:
     key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
     if not key:
-        raise RuntimeError("UI 进程尚未读取到 DASHSCOPE_API_KEY，请在任务空闲时重启 UI")
+        raise RuntimeError("服务器尚未配置 DASHSCOPE_API_KEY；请填写 config.local.json 中的密钥并重启 UI")
     return key
 
 

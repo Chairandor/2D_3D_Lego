@@ -16,7 +16,7 @@
 
 ## 服务器配置
 
-在 `config.local.json` 中填写 UniTEX 和 Prox-E 在服务器上的路径。Prox-E 默认查找同级目录 `3D/third_party/Prox-E`，并在运行编辑时读取其 `scripts/proxe_env.sh` 和 `config/proxe_relay.env`。后者存放中转站密钥，只留在服务器上，不提交到 Git。Qwen 阶段助手另外读取 `DASHSCOPE_API_KEY`。用户不需要填写 Prox-E 模型类别或选择 GPU；GPU 由服务器的 `PROXE_GPU` 决定。
+在 `config.local.json` 中填写 UniTEX 和 Prox-E 在服务器上的路径。Prox-E 默认查找同级目录 `3D/third_party/Prox-E`，并在运行编辑时读取其 `scripts/proxe_env.sh` 和 `config/proxe_relay.env`。后者存放中转站密钥，只留在服务器上，不提交到 Git。Qwen 阶段助手另需在 `config.local.json` 的 `DASHSCOPE_API_KEY` 填写百炼密钥，填写后重启 UI。用户不需要填写 Prox-E 模型类别或选择 GPU；GPU 由服务器的 `PROXE_GPU` 决定。
 
 启动方式：
 

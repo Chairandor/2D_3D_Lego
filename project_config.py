@@ -34,6 +34,7 @@ def load_project_config(root: Path) -> None:
         "LDRAW_DATA_HOME",
         "LDRAW_CACHE_HOME",
         "EXAMPLE_RUNS_ROOT",
+        "DASHSCOPE_API_KEY",
     }
     for key, value in values.items():
         if key not in allowed:
