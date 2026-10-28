@@ -1,0 +1,642 @@
+"""Run every placement strategy on one grid and select the best model.
+
+Selection is lexicographic, following the reference papers (Luo et al.,
+StableLego/BrickGPT, Kollsker): hard gates first, a scalar last. A weighted
+sum over every concern at once is explicitly reported as unreliable in the
+literature, so candidates are first gated on :attr:`PipelineResult.buildable`
+(stable, one connected component, nothing floating) and only the survivors
+are ranked — ascending by the weighted objective ``evaluate(...).total``,
+tie-broken by higher maximin friction capacity (Luo's ``C_M``), then fewer
+bricks, then strategy name so the result never depends on scheduling order.
+When no candidate passes the gate the least-bad layout is chosen instead
+(fewest components, then lowest worst-brick stress, then objective).
+
+Every candidate runs the full pipeline with the *same* seed and weights;
+only ``strategy`` differs (``progress`` is stripped so configs pickle under
+the spawn start method). Timeouts are cooperative: ``timeout_s`` is folded
+into ``time_budget_s``, which ``fast``/``smga``/``beauty`` honour, ``bond``
+ignores (it is single-pass fast), and ``greedy``/``luo`` have no budget
+hook — the parallel path additionally stops waiting once the deadline
+passes and records stragglers as errors, but it cannot hard-kill a running
+worker process.
+"""
+
+from __future__ import annotations
+
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
+from dataclasses import asdict, dataclass, replace
+from multiprocessing import get_context
+from typing import TYPE_CHECKING
+
+from legolization.instructions.sequencer import InstructionsConfig
+from legolization.pipeline import PipelineConfig, PipelineResult, run
+from legolization.placement.base import ObjectiveWeights, evaluate
+from legolization.placement.registry import strategy_names
+from legolization.runtime import (
+    ProgressCallback,
+    ProgressEvent,
+    logical_cpu_count,
+)
+from legolization.stability import (
+    SolverConfig,
+    build_model_from_config,
+    solve_maximin,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Collection, Sequence
+    from concurrent.futures import Future
+    from pathlib import Path
+
+    from legolization.grid import VoxelGrid
+
+_TIMEOUT_SLACK_S = 5.0
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateMetrics:
+    """Flat, JSON-safe scores for one finished candidate."""
+
+    buildable: bool
+    stable: bool
+    component_count: int
+    floating_count: int
+    objective_total: float
+    maximin_feasible: bool
+    maximin_capacity: float
+    max_score: float
+    min_capacity: float
+    brick_count: int
+    mass_g: float
+    step_count: int
+    cost: float
+    aesthetics: float
+    colour_error: float
+    perpendicularity: float
+    symmetry: float
+    # Appended after the original fields with defaults so persisted metrics
+    # payloads from before the audition terms still rehydrate via **payload.
+    speckle: float | None = None
+    profile: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Candidate:
+    """One (strategy, seed) outcome: a scored result or a captured error."""
+
+    strategy: str
+    seconds: float
+    result: PipelineResult | None = None
+    metrics: CandidateMetrics | None = None
+    error: str | None = None
+    # Appended after the original fields: positional callers predating the
+    # multi-seed sweep keep their meaning (PR #17 review).
+    seed: int = 0
+
+    @property
+    def ok(self) -> bool:
+        """Whether the strategy finished and was scored."""
+        return self.error is None and self.metrics is not None
+
+
+@dataclass(frozen=True, slots=True)
+class SelectionReport:
+    """The winning candidate, why it won, and the full field."""
+
+    winner: Candidate | None
+    reason: str
+    candidates: tuple[Candidate, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        """JSON-safe summary (no layouts or numpy payloads)."""
+        return {
+            "winner": self.winner.strategy if self.winner is not None else None,
+            "winner_seed": self.winner.seed if self.winner is not None else None,
+            "reason": self.reason,
+            "buildable": (
+                self.winner is not None
+                and self.winner.metrics is not None
+                and self.winner.metrics.buildable
+            ),
+            "candidates": [
+                {
+                    "strategy": candidate.strategy,
+                    "seed": candidate.seed,
+                    "seconds": round(candidate.seconds, 3),
+                    "error": candidate.error,
+                    "metrics": (
+                        asdict(candidate.metrics)
+                        if candidate.metrics is not None
+                        else None
+                    ),
+                }
+                for candidate in self.candidates
+            ],
+        }
+
+
+def candidate_metrics(
+    result: PipelineResult,
+    *,
+    weights: ObjectiveWeights,
+    solver_config: SolverConfig,
+) -> CandidateMetrics:
+    """Score one pipeline result into flat comparable numbers."""
+    if result.grid is None:
+        msg = "candidate metrics need a placed result (imported models have no grid)"
+        raise ValueError(msg)
+    report = evaluate(
+        result.layout,
+        result.grid,
+        weights=weights,
+        solver_config=solver_config,
+    )
+    maximin = solve_maximin(build_model_from_config(result.layout, solver_config))
+    return CandidateMetrics(
+        buildable=result.buildable,
+        stable=result.stability.stable,
+        component_count=result.component_count,
+        floating_count=result.floating_count,
+        objective_total=report.total,
+        maximin_feasible=maximin.feasible,
+        maximin_capacity=maximin.capacity,
+        max_score=result.stability.max_score,
+        min_capacity=result.stability.min_capacity,
+        brick_count=result.brick_count,
+        mass_g=result.mass_g,
+        step_count=result.step_count,
+        cost=report.cost,
+        aesthetics=report.aesthetics,
+        colour_error=report.colour_error,
+        perpendicularity=report.perpendicularity,
+        symmetry=report.symmetry,
+        speckle=report.speckle,
+        profile=report.profile,
+    )
+
+
+def select_best(candidates: Sequence[Candidate]) -> SelectionReport:
+    """Pick the winner lexicographically; independent of input order."""
+    ordered = tuple(
+        sorted(candidates, key=lambda candidate: (candidate.strategy, candidate.seed))
+    )
+    scored = [
+        (candidate, candidate.metrics)
+        for candidate in ordered
+        if candidate.error is None and candidate.metrics is not None
+    ]
+    if not scored:
+        return SelectionReport(
+            winner=None,
+            reason="every strategy failed",
+            candidates=ordered,
+        )
+    if buildable := [pair for pair in scored if pair[1].buildable]:
+        winner, metrics = min(
+            buildable,
+            key=lambda pair: (
+                pair[1].objective_total,
+                -pair[1].maximin_capacity,
+                pair[1].brick_count,
+                pair[0].strategy,
+                pair[0].seed,
+            ),
+        )
+        reason = (
+            f"buildable, best objective {metrics.objective_total:.4f} "
+            f"(capacity {metrics.maximin_capacity:.3f} N, "
+            f"{metrics.brick_count} bricks) "
+            f"among {len(buildable)} buildable candidate(s)"
+        )
+    else:
+        winner, metrics = min(
+            scored,
+            key=lambda pair: (
+                pair[1].component_count,
+                pair[1].max_score,
+                pair[1].objective_total,
+                pair[0].strategy,
+                pair[0].seed,
+            ),
+        )
+        reason = (
+            f"no candidate is buildable; least-bad has "
+            f"{metrics.component_count} component(s), "
+            f"worst stress {metrics.max_score:.3f}, "
+            f"objective {metrics.objective_total:.4f}"
+        )
+    return SelectionReport(winner=winner, reason=reason, candidates=ordered)
+
+
+def restart_race(  # noqa: PLR0913 - mirrors run_all's dispatch knobs
+    grid: VoxelGrid,
+    config: PipelineConfig,
+    *,
+    seeds: Sequence[int],
+    jobs: int = 0,
+    timeout_s: float | None = None,
+    progress: ProgressCallback | None = None,
+) -> tuple[int, SelectionReport]:
+    """Race ``config.strategy`` across seeds; return the winning seed.
+
+    The race disables instruction sequencing (``mode="layer"``) so only
+    placement and physics are paid per seed — the caller re-runs the
+    winner once with full outputs, which is deterministic. When no seed
+    is buildable the least-bad winner's seed is returned (diagnosis
+    semantics, same as sweeps); with no winner at all the first seed is
+    returned so the caller's full run surfaces the real error.
+    """
+    race = replace(
+        config,
+        instructions=InstructionsConfig(mode="layer"),
+        progress=None,
+    )
+    candidates = run_all(
+        grid,
+        race,
+        names=(config.strategy,),
+        seeds=tuple(seeds),
+        jobs=jobs,
+        timeout_s=timeout_s,
+        progress=progress,
+    )
+    report = _select_restart_best(candidates, objective=config.cost_objective)
+    winner_seed = report.winner.seed if report.winner is not None else config.seed
+    return winner_seed, report
+
+
+def _select_restart_best(
+    candidates: Sequence[Candidate],
+    *,
+    objective: str,
+) -> SelectionReport:
+    """Apply the deterministic heuristic-restart contract in canonical order."""
+    ordered = tuple(
+        sorted(candidates, key=lambda candidate: (candidate.strategy, candidate.seed))
+    )
+    eligible = [candidate for candidate in ordered if candidate.ok]
+    if not eligible:
+        return SelectionReport(
+            winner=None,
+            reason="every deterministic restart failed",
+            candidates=ordered,
+        )
+    winner = min(eligible, key=lambda item: _restart_key(item, objective=objective))
+    return SelectionReport(
+        winner=winner,
+        reason=f"deterministic {objective} restart ordering",
+        candidates=ordered,
+    )
+
+
+def _restart_key(candidate: Candidate, *, objective: str) -> tuple[object, ...]:
+    metrics = candidate.metrics
+    if metrics is None:
+        return (1, float("inf"), float("inf"), float("inf"), float("inf"), ())
+    configured_cost = metrics.mass_g if objective == "mass" else metrics.brick_count
+    return (
+        not metrics.buildable,
+        metrics.component_count,
+        metrics.floating_count,
+        metrics.max_score,
+        configured_cost,
+        _layout_signature(candidate.result),
+    )
+
+
+def _layout_signature(result: PipelineResult | None) -> tuple[tuple[object, ...], ...]:
+    if result is None:
+        return ()
+    return tuple(
+        sorted(
+            (
+                brick.part_key,
+                brick.x,
+                brick.y,
+                brick.layer,
+                brick.yaw,
+                brick.colour_code,
+                brick.offset_ldu,
+            )
+            for brick in result.layout
+        )
+    )
+
+
+def run_all(  # noqa: PLR0913 - sweep knobs are all keyword-only
+    grid: VoxelGrid,
+    config: PipelineConfig,
+    *,
+    jobs: int = 0,
+    names: Sequence[str] | None = None,
+    seeds: Sequence[int] | None = None,
+    timeout_s: float | None = None,
+    progress: ProgressCallback | None = None,
+    skip: Collection[tuple[str, int]] = (),
+    on_complete: Callable[[Candidate], None] | None = None,
+) -> list[Candidate]:
+    """Run each (strategy, seed) job; a single failure never kills the sweep.
+
+    ``seeds`` adds restart candidates: every strategy runs once per seed
+    (deduplicated, order preserved); None or empty means one run at
+    ``config.seed``. ``jobs=0`` picks one worker per job capped at the
+    CPU count; ``jobs=1`` runs sequentially in-process (no pool, no
+    pickling). ``timeout_s`` stays one sweep-wide soft deadline — more
+    seeds squeeze the same budget. Returns candidates sorted by
+    (strategy, seed) regardless of completion order.
+    """
+    configs = _candidate_configs(
+        config,
+        names=names,
+        seeds=seeds,
+        timeout_s=timeout_s,
+        skip=skip,
+    )
+    if not configs:
+        return []
+    workers = jobs if jobs > 0 else min(len(configs), logical_cpu_count())
+    if workers == 1:
+        candidates = _run_sequential(
+            grid,
+            configs,
+            timeout_s=timeout_s,
+            progress=progress,
+            on_complete=on_complete,
+        )
+    else:
+        candidates = _run_parallel(
+            grid,
+            configs,
+            workers=workers,
+            timeout_s=timeout_s,
+            progress=progress,
+            on_complete=on_complete,
+        )
+    return sorted(candidates, key=lambda c: (c.strategy, c.seed))
+
+
+def _candidate_configs(
+    config: PipelineConfig,
+    *,
+    names: Sequence[str] | None,
+    seeds: Sequence[int] | None,
+    timeout_s: float | None,
+    skip: Collection[tuple[str, int]],
+) -> dict[tuple[str, int], PipelineConfig]:
+    chosen = tuple(names) if names is not None else tuple(strategy_names())
+    chosen_seeds = tuple(dict.fromkeys(seeds)) if seeds else (config.seed,)
+    skipped = set(skip)
+    return {
+        (name, seed): candidate_config(
+            config, strategy=name, seed=seed, timeout_s=timeout_s
+        )
+        for name in chosen
+        for seed in chosen_seeds
+        if (name, seed) not in skipped
+    }
+
+
+def _run_sequential(
+    grid: VoxelGrid,
+    configs: dict[tuple[str, int], PipelineConfig],
+    *,
+    timeout_s: float | None,
+    progress: ProgressCallback | None,
+    on_complete: Callable[[Candidate], None] | None,
+) -> list[Candidate]:
+    """Run candidates against one shared monotonic sweep deadline."""
+    deadline = time.monotonic() + timeout_s if timeout_s is not None else None
+    candidates: list[Candidate] = []
+    for (name, seed), candidate_config in configs.items():
+        remaining = None if deadline is None else deadline - time.monotonic()
+        candidate = (
+            Candidate(
+                strategy=name,
+                seconds=0.0,
+                error="sweep deadline expired before this candidate started",
+                seed=seed,
+            )
+            if remaining is not None and remaining <= 0
+            else _run_candidate(grid, _restrict_budget(candidate_config, remaining))
+        )
+        _report(progress, candidate)
+        if on_complete is not None:
+            on_complete(candidate)
+        candidates.append(candidate)
+    return candidates
+
+
+def candidate_config(
+    config: PipelineConfig,
+    *,
+    strategy: str,
+    seed: int,
+    timeout_s: float | None,
+) -> PipelineConfig:
+    """Clone the config for one job; strip the unpicklable progress.
+
+    Public because a candidate's configuration hash has to be computed from
+    exactly what the sweep will run: anyone re-deriving it by hand drifts.
+    """
+    budgets = [
+        budget for budget in (config.time_budget_s, timeout_s) if budget is not None
+    ]
+    return replace(
+        config,
+        strategy=strategy,
+        seed=seed,
+        progress=None,
+        time_budget_s=min(budgets) if budgets else None,
+    )
+
+
+def _restrict_budget(
+    config: PipelineConfig,
+    remaining: float | None,
+) -> PipelineConfig:
+    """Tighten a candidate's time budget to the sweep's remaining seconds."""
+    if remaining is None:
+        return config
+    budgets = [b for b in (config.time_budget_s, remaining) if b is not None]
+    return replace(config, time_budget_s=min(budgets))
+
+
+def _run_candidate(grid: VoxelGrid, config: PipelineConfig) -> Candidate:
+    """Run one strategy end to end; exceptions become data, never propagate.
+
+    Module-level so the spawn start method can pickle it. Metrics are
+    computed here, in the worker, so their LP solves parallelize too.
+    """
+    start = time.perf_counter()
+    try:
+        result = run(grid=grid, config=config)
+        metrics = candidate_metrics(
+            result,
+            weights=config.weights,
+            solver_config=config.solver,
+        )
+    except Exception as error:  # noqa: BLE001 - isolate strategy failures
+        return Candidate(
+            strategy=config.strategy,
+            seconds=time.perf_counter() - start,
+            seed=config.seed,
+            error=f"{type(error).__name__}: {error}",
+        )
+    return Candidate(
+        strategy=config.strategy,
+        seconds=time.perf_counter() - start,
+        seed=config.seed,
+        result=result,
+        metrics=metrics,
+    )
+
+
+def _run_parallel(  # noqa: PLR0913
+    grid: VoxelGrid,
+    configs: dict[tuple[str, int], PipelineConfig],
+    *,
+    workers: int,
+    timeout_s: float | None,
+    progress: ProgressCallback | None,
+    on_complete: Callable[[Candidate], None] | None,
+) -> list[Candidate]:
+    """Fan out over a spawn pool with a soft, sweep-wide wait deadline.
+
+    Pending futures become timeout candidates once the deadline passes.
+    Already-running workers cannot be terminated by ``ProcessPoolExecutor``
+    and may continue after this function returns.
+    """
+    start = time.perf_counter()
+    candidates: list[Candidate] = []
+    executor = ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=get_context("spawn"),
+    )
+    try:
+        pending: dict[Future[Candidate], tuple[str, int]] = {
+            executor.submit(_run_candidate, grid, candidate_config): key
+            for key, candidate_config in configs.items()
+        }
+        deadline = None if timeout_s is None else timeout_s + _TIMEOUT_SLACK_S
+        try:
+            for future in as_completed(pending, timeout=deadline):
+                name, seed = pending.pop(future)
+                candidate = _collect(future, strategy=name, seed=seed)
+                _report(progress, candidate)
+                if on_complete is not None:
+                    on_complete(candidate)
+                candidates.append(candidate)
+        except TimeoutError:
+            pass
+        elapsed = time.perf_counter() - start
+        timeout_text = "" if timeout_s is None else f" after {timeout_s:.0f}s"
+        for name, seed in pending.values():
+            candidate = Candidate(
+                strategy=name,
+                seconds=elapsed,
+                seed=seed,
+                error=f"timed out{timeout_text}",
+            )
+            _report(progress, candidate)
+            if on_complete is not None:
+                on_complete(candidate)
+            candidates.append(candidate)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    return candidates
+
+
+def _collect(future: Future[Candidate], *, strategy: str, seed: int) -> Candidate:
+    """Unwrap a finished future; retrieval failures become error candidates."""
+    try:
+        return future.result(timeout=0)
+    except BrokenProcessPool:
+        return Candidate(
+            strategy=strategy,
+            seconds=0.0,
+            seed=seed,
+            error="worker process pool broke (native crash?)",
+        )
+    except Exception as error:  # noqa: BLE001 - isolate worker transport failures
+        return Candidate(
+            strategy=strategy,
+            seconds=0.0,
+            seed=seed,
+            error=(f"failed to retrieve result: {type(error).__name__}: {error}"),
+        )
+
+
+def _report(progress: ProgressCallback | None, candidate: Candidate) -> None:
+    if progress is None:
+        return
+    verdict = "ok" if candidate.ok else f"error: {candidate.error}"
+    tag = f"[seed {candidate.seed}]" if candidate.seed else ""
+    progress(
+        ProgressEvent(
+            message=f"{candidate.strategy}{tag}: {verdict} ({candidate.seconds:.1f}s)",
+            phase="placement.restart",
+            level="info" if candidate.ok else "error",
+        )
+    )
+
+
+def print_candidate_table(candidates: Sequence[Candidate]) -> None:
+    """Print one summary line per (strategy, seed) candidate."""
+    multi_seed = len({candidate.seed for candidate in candidates}) > 1
+    seed_header = f" {'seed':>4}" if multi_seed else ""
+    print(
+        f"  {'strategy':<8}{seed_header} {'bricks':>6} {'buildable':>9} "
+        f"{'objective':>9} {'capacity':>8} {'seconds':>7}"
+    )
+    for candidate in candidates:
+        seed_cell = f" {candidate.seed:>4}" if multi_seed else ""
+        if (metrics := candidate.metrics) is None:
+            print(
+                f"  {candidate.strategy:<8}{seed_cell} "
+                f"error: {candidate.error} ({candidate.seconds:.1f}s)"
+            )
+        else:
+            print(
+                f"  {candidate.strategy:<8}{seed_cell} {metrics.brick_count:>6} "
+                f"{'yes' if metrics.buildable else 'no':>9} "
+                f"{metrics.objective_total:>9.4f} "
+                f"{metrics.maximin_capacity:>8.3f} {candidate.seconds:>7.1f}"
+            )
+
+
+def write_candidate_models(
+    report: SelectionReport,
+    *,
+    directory: Path,
+    output: Path,
+) -> tuple[Path, ...]:
+    """Write every successful candidate's model into ``directory``."""
+    from legolization.ldraw_out import write_model  # noqa: PLC0415 - avoids cycle
+
+    directory.mkdir(parents=True, exist_ok=True)
+    multi_seed = len({c.seed for c in report.candidates}) > 1
+    written: list[Path] = []
+    for candidate in report.candidates:
+        if candidate.result is None:
+            continue
+        seed_tag = f".seed{candidate.seed}" if multi_seed else ""
+        path = (
+            directory / f"{output.stem}.{candidate.strategy}{seed_tag}{output.suffix}"
+        )
+        write_model(candidate.result.layout, path, plan=candidate.result.plan)
+        written.append(path)
+    return tuple(written)
+
+
+__all__ = [
+    "Candidate",
+    "CandidateMetrics",
+    "SelectionReport",
+    "candidate_metrics",
+    "print_candidate_table",
+    "run_all",
+    "select_best",
+    "write_candidate_models",
+]

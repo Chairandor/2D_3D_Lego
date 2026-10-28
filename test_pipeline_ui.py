@@ -9,9 +9,230 @@ from unittest import mock
 
 import pipeline_ui
 import ui_revisions
+import ui_run_state
+from test_ui_six_view import write_six_view, sheet_bytes
 
 
 class PipelineUITests(unittest.TestCase):
+    def _completed_texture_revision(self, directory: Path) -> tuple[Path, Path, Path]:
+        run_dir = directory / "main"
+        source = directory / "source.png"
+        source.write_bytes(b"original input")
+        relatives = (
+            "input/foreground.png", "hunyuan/mesh_shape_review_clean.glb",
+            "unitex/mv_rgb.png", "unitex/textured_mesh.glb",
+            "oriented/mesh_upright.glb", "oriented/lego_input.ply", "lego-8/model.mpd",
+        )
+        for relative in relatives:
+            path = run_dir / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"original")
+        (run_dir / "input/preprocess.json").write_text(
+            json.dumps({"source": str(source)}), encoding="utf-8"
+        )
+        write_six_view(run_dir)
+        candidate = ui_revisions.add_candidate(
+            run_dir, "unitex/mv_rgb.png", "edited.png", sheet_bytes(), pipeline_ui.ROOT,
+        )
+        ui_revisions.choose(run_dir, "unitex/mv_rgb.png", "candidate", pipeline_ui.ROOT)
+        branch = ui_revisions.create_texture_branch(
+            run_dir, Path(candidate["candidate"]), run_dir / "input/foreground.png",
+            run_dir / "hunyuan/mesh_shape_review_clean.glb", pipeline_ui.ROOT,
+        )
+        for relative in relatives[2:]:
+            path = branch / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(Path(candidate["candidate"]).read_bytes() if relative == "unitex/mv_rgb.png" else b"new result")
+        pipeline_ui.artifact_groups(branch)
+        for relative in ("unitex/textured_mesh.glb", "lego-8/model.mpd"):
+            ui_revisions.choose(branch, relative, "candidate", pipeline_ui.ROOT)
+        return run_dir, branch, source
+
+    def test_reopening_legacy_run_restores_selected_texture_and_downstream(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            run_dir, branch, source = self._completed_texture_revision(Path(temporary))
+            self.assertNotIn("active_run_dir", ui_revisions.load_state(run_dir))
+            controller = pipeline_ui.PipelineController()
+            controller.load_run(run_dir)
+            self.assertEqual(controller.run_dir, branch)
+            self.assertEqual(pipeline_ui.display_form_values(controller.run_dir, controller.image), (str(source), str(run_dir)))
+            groups = {g["relative"]: g for g in pipeline_ui.artifact_groups(controller.run_dir)}
+            for relative in ("unitex/textured_mesh.glb", "lego-8/model.mpd"):
+                self.assertEqual(groups[relative]["choice"], "candidate")
+                self.assertEqual(groups[relative]["candidate"]["size"], len(b"new result"))
+            self.assertIsNone(groups["oriented/lego_input.ply"]["candidate"])
+            self.assertEqual(groups["oriented/lego_input.ply"]["original"]["size"], len(b"new result"))
+            self.assertEqual(ui_revisions.load_state(run_dir)["active_run_dir"], str(branch))
+            # A second new controller must load exactly the same branch and
+            # resume it when the form still contains the public input/folder.
+            restarted = pipeline_ui.PipelineController()
+            restarted.load_run(run_dir)
+            _, _, actual_dir = pipeline_ui.build_command({
+                "image_path": str(source), "output_dir": str(run_dir),
+            }, active_run_dir=restarted.run_dir)
+            self.assertEqual(actual_dir, branch)
+
+    def test_switching_from_other_project_resumes_this_folders_saved_branch(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            public, branch, image = self._completed_texture_revision(Path(temporary))
+            ui_revisions.remember_active_run(branch, pipeline_ui.ROOT)
+            other = Path(temporary) / "other"
+            other.mkdir()
+            for active in (None, other, public):
+                command, actual_image, actual_run = pipeline_ui.build_command(
+                    {"image_path": str(image), "output_dir": str(public)}, active_run_dir=active,
+                )
+                self.assertEqual(actual_run, branch)
+                self.assertIn("--unitex-six-view", command)
+                self.assertEqual(actual_image, public / "input/foreground.png")
+
+    def test_legacy_self_pointer_does_not_override_exact_adopted_six_view(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            public, branch, _ = self._completed_texture_revision(Path(temporary))
+            ui_revisions.update_state(public, lambda state: state.update(active_run_dir=str(public)))
+            controller = pipeline_ui.PipelineController()
+            controller.load_run(public)
+            self.assertEqual(controller.run_dir, branch)
+            self.assertEqual(ui_run_state.active_run(public, pipeline_ui.ROOT), branch)
+
+    def test_manifest_reopen_does_not_scan_subdirectories_or_reset_choices(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            public, branch, _ = self._completed_texture_revision(Path(temporary))
+            controller = pipeline_ui.PipelineController()
+            controller.load_run(public)
+            state_path = public / ui_run_state.STATE_FILE
+            before = state_path.read_bytes()
+            stray = branch / "lego-64/model.mpd"
+            stray.parent.mkdir(); stray.write_bytes(b"unadopted")
+            with mock.patch.object(pipeline_ui, "artifact_inventory", side_effect=AssertionError("no scan on reopen")):
+                restarted = pipeline_ui.PipelineController()
+                restarted.load_run(public)
+                view = pipeline_ui.current_view(restarted.run_dir)
+                groups = {group["relative"]: group for group in view["artifact_groups"]}
+                self.assertEqual(groups["lego-8/model.mpd"]["choice"], "candidate")
+                self.assertNotIn("lego-64/model.mpd", groups)
+                self.assertEqual(restarted.run_dir, branch)
+            self.assertEqual(state_path.read_bytes(), before)
+
+    def test_missing_selected_artifact_reports_error_instead_of_using_original(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            public, branch, _ = self._completed_texture_revision(Path(temporary))
+            controller = pipeline_ui.PipelineController()
+            controller.load_run(public)
+            (branch / "lego-8/model.mpd").unlink()
+            with self.assertRaisesRegex(ValueError, "不会自动换成初版"):
+                pipeline_ui.current_view(branch)
+
+    def test_revision_change_updates_manifest_then_survives_reopen(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            public, branch, _ = self._completed_texture_revision(Path(temporary))
+            controller = pipeline_ui.PipelineController()
+            controller.load_run(public)
+            ui_revisions.choose(branch, "lego-8/model.mpd", "original", pipeline_ui.ROOT)
+            groups = {g["relative"]: g for g in pipeline_ui.current_view(branch)["artifact_groups"]}
+            self.assertEqual(groups["lego-8/model.mpd"]["choice"], "original")
+            reopened = pipeline_ui.PipelineController()
+            reopened.load_run(public)
+            groups = {g["relative"]: g for g in pipeline_ui.current_view(reopened.run_dir)["artifact_groups"]}
+            self.assertEqual(groups["lego-8/model.mpd"]["choice"], "original")
+
+    def test_explicit_main_state_is_preserved_even_when_old_branch_files_exist(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            public, branch, _ = self._completed_texture_revision(Path(temporary))
+            ui_revisions.remember_active_run(public, pipeline_ui.ROOT)
+            pipeline_ui.current_view(public)
+            self.assertEqual(ui_revisions.restore_active_run(public, pipeline_ui.ROOT), public)
+
+    def test_manifest_missing_branch_or_corrupt_data_never_falls_back(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            public, branch, _ = self._completed_texture_revision(Path(temporary))
+            ui_revisions.remember_active_run(branch, pipeline_ui.ROOT)
+            state_file = public / ui_run_state.STATE_FILE
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            state["active_run"] = "ui_revisions/branches/missing"
+            state_file.write_text(json.dumps(state), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "不会自动退回初版"):
+                ui_revisions.restore_active_run(public, pipeline_ui.ROOT)
+            state_file.write_text("{corrupt", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "不会自动退回初版"):
+                ui_revisions.restore_active_run(public, pipeline_ui.ROOT)
+
+    def test_pending_comparison_survives_reopen(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            public, branch, _ = self._completed_texture_revision(Path(temporary))
+            controller = pipeline_ui.PipelineController()
+            controller.load_run(public)
+            ui_revisions.add_candidate(branch, "lego-8/model.mpd", "new.mpd", b"pending new", pipeline_ui.ROOT)
+            pipeline_ui.current_view(branch)
+            reopened = pipeline_ui.PipelineController()
+            reopened.load_run(public)
+            group = next(g for g in pipeline_ui.current_view(reopened.run_dir)["artifact_groups"] if g["relative"] == "lego-8/model.mpd")
+            self.assertIsNone(group["choice"])
+            self.assertIsNotNone(group["candidate"])
+
+    def test_newly_generated_model_is_persisted_on_completion_refresh(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            public, branch, _ = self._completed_texture_revision(Path(temporary))
+            controller = pipeline_ui.PipelineController()
+            controller.load_run(public)
+            model = branch / "lego-16/model.mpd"
+            model.parent.mkdir(); model.write_bytes(b"new completed model")
+            pipeline_ui.current_view(branch, refresh=True)
+            with mock.patch.object(pipeline_ui, "artifact_inventory", side_effect=AssertionError("no scan on reopen")):
+                reopened = pipeline_ui.PipelineController()
+                reopened.load_run(public)
+                groups = pipeline_ui.current_view(reopened.run_dir)["artifact_groups"]
+            self.assertIn("lego-16/model.mpd", [g["relative"] for g in groups])
+
+    def test_concurrent_revision_and_active_pointer_writes_preserve_both(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            public = Path(temporary)
+            def edit(index):
+                ui_revisions.update_state(public, lambda state: state["pairs"].update({str(index): {"choice": "original"}}))
+            def pointer(index):
+                ui_revisions.update_state(public, lambda state: state.update(active_run_dir=str(public)))
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                futures = [pool.submit(edit, i) for i in range(30)] + [pool.submit(pointer, i) for i in range(30)]
+                for future in futures:
+                    future.result()
+            state = ui_revisions.load_state(public)
+            self.assertEqual(len(state["pairs"]), 30)
+            self.assertEqual(state["active_run_dir"], str(public))
+
+    def test_adopting_branch_persists_before_restart(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            run_dir, branch, source = self._completed_texture_revision(Path(temporary))
+            controller = pipeline_ui.PipelineController()
+            controller.activate_branch(branch, source)
+            self.assertEqual(ui_revisions.restore_active_run(run_dir, pipeline_ui.ROOT), branch)
+            with mock.patch.object(pipeline_ui, "DEFAULT_IMAGE", source), \
+                 mock.patch.object(pipeline_ui, "default_run_dir", return_value=run_dir):
+                restarted = pipeline_ui.PipelineController()
+            self.assertEqual(restarted.run_dir, branch)
+
+    def test_legacy_restore_does_not_guess_between_matching_branches(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            run_dir, branch, _ = self._completed_texture_revision(Path(temporary))
+            settings = ui_revisions.branch_settings(branch, pipeline_ui.ROOT)
+            ui_revisions.create_texture_branch(
+                run_dir, Path(settings["six_view"]), Path(settings["source_image"]),
+                Path(settings["from_shape"]), pipeline_ui.ROOT,
+            )
+            self.assertEqual(ui_revisions.restore_active_run(run_dir, pipeline_ui.ROOT), run_dir)
+            # Once adopted explicitly, the persisted choice disambiguates it.
+            ui_revisions.remember_active_run(branch, pipeline_ui.ROOT)
+            self.assertEqual(ui_revisions.restore_active_run(run_dir, pipeline_ui.ROOT), branch)
+
+    def test_restore_rejects_an_active_branch_from_another_project(self) -> None:
+        with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
+            run_dir, branch, _ = self._completed_texture_revision(Path(temporary))
+            other = Path(temporary) / "other"
+            other.mkdir()
+            state = ui_revisions.load_state(run_dir)
+            state["active_run_dir"] = str(other)
+            ui_revisions._save_state(run_dir, state)
+            self.assertEqual(ui_revisions.restore_active_run(run_dir, pipeline_ui.ROOT), branch)
+
     def test_revision_state_saves_do_not_share_a_temp_filename(self) -> None:
         with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
             run_dir = Path(temporary)
@@ -182,8 +403,9 @@ class PipelineUITests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(relative.encode())
                 paths[relative] = path
+            write_six_view(run_dir)
             result = ui_revisions.add_candidate(
-                run_dir, "unitex/mv_rgb.png", "fixed.png", b"modified",
+                run_dir, "unitex/mv_rgb.png", "fixed.png", sheet_bytes(),
                 pipeline_ui.ROOT, origin="assistant",
             )
             branch = ui_revisions.create_texture_branch(
@@ -209,12 +431,12 @@ class PipelineUITests(unittest.TestCase):
             ui_revisions.choose(branch, "unitex/mv_rgb.png", "candidate", pipeline_ui.ROOT)
             copied_sheet = branch / "unitex" / "mv_rgb.png"
             copied_sheet.parent.mkdir(parents=True)
-            copied_sheet.write_bytes(b"modified")
+            copied_sheet.write_bytes(Path(result["candidate"]).read_bytes())
             after_run = {g["relative"]: g for g in pipeline_ui.artifact_groups(branch)}
             self.assertIsNone(after_run["unitex/mv_rgb.png"]["candidate"])
-            self.assertEqual(after_run["unitex/mv_rgb.png"]["original"]["size"], len(b"modified"))
+            self.assertEqual(after_run["unitex/mv_rgb.png"]["original"]["size"], copied_sheet.stat().st_size)
             ui_revisions.add_candidate(
-                branch, "unitex/mv_rgb.png", "another.png", b"another edit", pipeline_ui.ROOT
+                branch, "unitex/mv_rgb.png", "another.png", sheet_bytes((180, 50, 40)), pipeline_ui.ROOT
             )
             another_edit = {g["relative"]: g for g in pipeline_ui.artifact_groups(branch)}
             self.assertIsNotNone(another_edit["unitex/mv_rgb.png"]["candidate"])

@@ -1,0 +1,4 @@
+Chinese font: Droid Sans Fallback, regular, provided from the MuPDF runtime font buffer.
+Droid fonts: Copyright (c) Google / Ascender Corporation.
+Licensed under the Apache License, Version 2.0. See FONT_LICENSE.txt.
+The font is used to embed Chinese text in the generated PDF.

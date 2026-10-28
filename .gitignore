@@ -54,3 +54,20 @@ external/
 segmentation_lab/sam2_repo/
 .DS_Store
 Thumbs.db
+
+# Per-model UI selections and isolated instruction runtime outputs
+ui_current_state.json
+ui_current_state.lock
+.ui-details/
+instructions_workbench/.setup_temp/
+instructions_workbench/.test_temp/
+instructions_workbench/outputs/
+instructions_workbench/config/local.json
+instructions_workbench/vendor/**/build/
+*.egg-info/
+.review-temp/
+
+# The instruction worker ships one pinned source snapshot, not a checkout.
+!instructions_workbench/vendor/legolization060/legolization/
+!instructions_workbench/vendor/legolization060/legolization/**
+instructions_workbench/vendor/**/__pycache__/

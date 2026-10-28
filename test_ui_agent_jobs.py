@@ -14,6 +14,7 @@ import ui_agent_jobs
 import ui_assistant
 import ui_revisions
 from pipeline_ui import ROOT
+from test_ui_six_view import write_six_view, sheet_bytes
 
 
 class _Response:
@@ -115,14 +116,15 @@ class AssistantTests(unittest.TestCase):
             root = Path(temporary)
             run = root / "run"
             original = run / "unitex" / "mv_rgb.png"
-            original.parent.mkdir(parents=True)
-            original.write_bytes(b"original")
+            write_six_view(run)
+            original_bytes = original.read_bytes()
             result = ui_revisions.add_candidate(
-                run, "unitex/mv_rgb.png", "assistant.png", b"candidate", root,
+                run, "unitex/mv_rgb.png", "assistant.png", sheet_bytes(), root,
                 origin="assistant",
             )
-            self.assertEqual(original.read_bytes(), b"original")
-            self.assertEqual(Path(str(result["candidate"])).read_bytes(), b"candidate")
+            self.assertEqual(original.read_bytes(), original_bytes)
+            with Image.open(result["candidate"]) as candidate:
+                self.assertEqual(candidate.size, (96, 64))
             self.assertIsNone(ui_revisions.selected_pair(run, "unitex/mv_rgb.png", root)["choice"])
 
     def test_new_lego_job_stays_in_isolated_path_and_can_be_analyzed(self) -> None:

@@ -1,0 +1,65 @@
+"""Stability-aware auto-hollowing.
+
+Hollowing erodes the filled volume to a shell (cheaper, lighter models) —
+by default 1 stud of wall and 3 plates (one brick) of floor/ceiling, close
+to Luo's ~3-voxel-width shells. The pipeline runs placement + the RBE on
+the hollowed grid and, if physics disagrees, calls :func:`restore_columns`
+to put interior fill back underneath the offending bricks and tries again.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import numpy as np
+
+from legolization.grid import EMPTY, IGNORE, VoxelGrid
+
+if TYPE_CHECKING:
+    from legolization.catalog import Cell
+
+
+def hollow_grid(
+    grid: VoxelGrid,
+    *,
+    shell_studs: int = 1,
+    shell_plates: int = 3,
+) -> VoxelGrid:
+    """Remove core cells, keeping the given shell thickness.
+
+    ``shell_studs`` is the lateral wall thickness, ``shell_plates`` the
+    floor/ceiling thickness; the defaults keep about one brick of material
+    in every direction.
+    """
+    codes = grid.codes.copy()
+    codes[grid.core_mask(margin_xy=shell_studs, margin_z=shell_plates)] = EMPTY
+    return grid.with_codes(codes)
+
+
+def restore_columns(
+    original: VoxelGrid,
+    hollowed: VoxelGrid,
+    trouble_cells: set[Cell],
+    *,
+    radius: int = 1,
+) -> VoxelGrid:
+    """Restore original interior fill in columns around trouble cells.
+
+    Every grid column within ``radius`` (Chebyshev) of a trouble cell's
+    column gets its interior content back as colour-free ``IGNORE`` cells
+    (they were interior, hence invisible — any brick colour may cover them
+    without fragmenting merges), giving unstable regions solid material to
+    bear on. Returns the (possibly identical) new grid.
+    """
+    codes = hollowed.codes.copy()
+    nx, ny, _ = hollowed.shape
+    columns = {(x, y) for x, y, _ in trouble_cells}
+    for cx, cy in columns:
+        x_lo, x_hi = max(cx - radius, 0), min(cx + radius + 1, nx)
+        y_lo, y_hi = max(cy - radius, 0), min(cy + radius + 1, ny)
+        region = codes[x_lo:x_hi, y_lo:y_hi, :]
+        source = original.codes[x_lo:x_hi, y_lo:y_hi, :]
+        region[(region == EMPTY) & (source != EMPTY)] = IGNORE
+    if np.array_equal(codes, hollowed.codes):
+        return hollowed
+    return hollowed.with_codes(codes)
