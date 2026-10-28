@@ -11,6 +11,15 @@ id_rsa*
 *.sftp
 
 # Python environments, caches and generated outputs
+# Local symlinks to shared server resources are files in Git's view.
+.venv-hunyuan
+LDrawLibrary
+legolization
+segmentation_lab/florence_env
+segmentation_lab/florence_models
+segmentation_lab/sam2_env
+segmentation_lab/sam2_models
+segmentation_lab/sam2_repo
 __pycache__/
 *.py[cod]
 .venv*/
