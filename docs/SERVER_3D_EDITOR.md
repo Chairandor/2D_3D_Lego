@@ -18,6 +18,8 @@
 
 在 `config.local.json` 中填写 UniTEX 和 Prox-E 在服务器上的路径。Prox-E 默认查找同级目录 `3D/third_party/Prox-E`，并在运行编辑时读取其 `scripts/proxe_env.sh` 和 `config/proxe_relay.env`。后者存放中转站密钥，只留在服务器上，不提交到 Git。Qwen 阶段助手另需在 `config.local.json` 的 `DASHSCOPE_API_KEY` 填写百炼密钥，填写后重启 UI。用户不需要填写 Prox-E 模型类别或选择 GPU；GPU 由服务器的 `PROXE_GPU` 决定。
 
+Linux 说明书可复用服务器上已有的 Python 3.12 环境、LeoCAD 和 Xvfb。把绝对路径分别填入私有 `config.local.json` 的 `INSTRUCTIONS_PYTHON`、`INSTRUCTIONS_LEOCAD_BIN`、`INSTRUCTIONS_XVFB_BIN`；说明书的私有 `instructions_workbench/config/local.json` 把 `renderer` 指向本项目 `scripts/leocad_external.py`，`ldraw_dir` 指向共享 LDraw，`output_root` 指向本项目 `runs/lego-instructions`。这样渲染临时文件和结果只写入本项目，无需复制共享二进制、权重或零件库。
+
 启动方式：
 
 ```bash

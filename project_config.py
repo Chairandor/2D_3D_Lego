@@ -35,6 +35,9 @@ def load_project_config(root: Path) -> None:
         "LDRAW_CACHE_HOME",
         "EXAMPLE_RUNS_ROOT",
         "DASHSCOPE_API_KEY",
+        "INSTRUCTIONS_PYTHON",
+        "INSTRUCTIONS_LEOCAD_BIN",
+        "INSTRUCTIONS_XVFB_BIN",
     }
     for key, value in values.items():
         if key not in allowed:

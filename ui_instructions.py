@@ -119,6 +119,8 @@ class InstructionService:
         self.jobs: dict[str, dict] = {}
 
     def python_executable(self) -> Path:
+        if configured := os.environ.get("INSTRUCTIONS_PYTHON"):
+            return Path(configured).expanduser()
         venv = self.workbench / ".venv"
         native = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         legacy = venv / "Scripts/python.exe"
