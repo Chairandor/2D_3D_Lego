@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import json
+import hashlib
+import os
 import shutil
 import time
 from pathlib import Path
@@ -19,9 +20,18 @@ ARTIFACTS = (
 LOCAL_EXAMPLES = {
     "fox-demo": (Path("/data/data_zxn/3D/model/Fox"), "狐狸 Fox（完整流程示例）"),
     "fox-reviewed": (
-        Path("/data/data_zxn/2D_3D_Lego_server/runs/imported-textured_mesh-20261025-222650-417110"),
+        Path("/data/data_zxn/3D/model/Fox"),
         "狐狸 Fox（已验收的 Prox-E 去脚结果）",
     ),
+}
+
+REVIEWED_EXAMPLES = {
+    "fox-reviewed": {
+        "source": Path("/data/data_zxn/2D_3D_Lego_server/runs/imported-textured_mesh-20261025-222650-417110/oriented/mesh_upright.glb"),
+        "result": Path("/data/data_zxn/2D_3D_Lego_server/runs/imported-textured_mesh-20261025-222650-417110/ai_edit/edit-20261026-021851-123912/proxe_output/fox/mesh_upright/output_calibrated.glb"),
+        "source_relative": "unitex/textured_mesh.glb",
+        "instruction": "去掉狐狸的四只脚",
+    },
 }
 
 
@@ -56,18 +66,36 @@ def copy_run(identifier: str, destination_root: Path) -> Path:
     target.mkdir(parents=True, exist_ok=False)
     try:
         for relative in ARTIFACTS:
+            if identifier in REVIEWED_EXAMPLES and relative.startswith("lego/"):
+                continue
             origin = source / relative
             if origin.is_file() and not origin.is_symlink() and origin.resolve().is_relative_to(source.resolve()):
                 output = target / relative
                 output.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(origin, output)
-        for origin in source.glob("lego-*/model.mpd"):
+        for origin in (() if identifier in REVIEWED_EXAMPLES else source.glob("lego-*/model.mpd")):
             if origin.is_file() and not origin.is_symlink() and origin.resolve().is_relative_to(source.resolve()):
                 output = target / origin.relative_to(source)
                 output.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(origin, output)
+        if identifier in REVIEWED_EXAMPLES:
+            reviewed = REVIEWED_EXAMPLES[identifier]
+            model = target / reviewed["source_relative"]
+            with model.open("rb") as current, reviewed["source"].open("rb") as original:
+                if hashlib.file_digest(current, "sha256").digest() != hashlib.file_digest(original, "sha256").digest():
+                    raise ValueError("已验收结果与当前贴图模型不属于同一份输入")
+            result = target / "ai_edit/reviewed/output_calibrated.glb"
+            result.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(reviewed["result"], result)
+            (target / "ai_edit_state.json").write_text(json.dumps({
+                "status": "review",
+                "latest_result": str(result),
+                "latest_instruction": reviewed["instruction"],
+                "history": [{"source": str(model), "output": str(result),
+                             "instruction": reviewed["instruction"]}],
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
         state_file = source / "ai_edit_state.json"
-        if state_file.is_file() and not state_file.is_symlink():
+        if identifier not in REVIEWED_EXAMPLES and state_file.is_file() and not state_file.is_symlink():
             state = json.loads(state_file.read_text(encoding="utf-8"))
             reviewed = Path(str(state.get("latest_result", ""))).resolve()
             if reviewed.is_file() and reviewed.is_relative_to(source.resolve()):
