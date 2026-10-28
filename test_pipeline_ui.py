@@ -77,6 +77,14 @@ class PipelineUITests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
             public, branch, image = self._completed_texture_revision(Path(temporary))
             ui_revisions.remember_active_run(branch, pipeline_ui.ROOT)
+            another_image = Path(temporary) / "another.png"
+            another_image.write_bytes(b"another image")
+            with self.assertRaises(ValueError) as error:
+                pipeline_ui.build_command(
+                    {"image_path": str(another_image), "output_dir": str(public)},
+                    active_run_dir=None,
+                )
+            self.assertIn(f"原始输入：{image}", str(error.exception))
             other = Path(temporary) / "other"
             other.mkdir()
             for active in (None, other, public):

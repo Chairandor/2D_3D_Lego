@@ -374,7 +374,10 @@ def build_command(
         if restored != run_dir:
             display_image, _ = display_form_values(restored, image)
             if image != Path(display_image):
-                raise ValueError("此目录已有已采用的修改版；请使用该目录原始输入，或为新图片指定新目录")
+                raise ValueError(
+                    "此目录已有已采用的修改版。请使用该目录原始输入："
+                    f"{display_image}；或为新图片指定新目录。"
+                )
             active_run_dir = restored
 
     # The form always shows the original input and top-level folder. Resume
