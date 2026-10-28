@@ -23,6 +23,7 @@ from pathlib import Path
 import ui_assistant
 import ui_agent_jobs
 import ui_revisions
+import existing_runs
 import proxe_integration as proxe
 
 from project_config import load_project_config, venv_executable
@@ -178,13 +179,6 @@ def artifact_inventory(run_dir: Path | None) -> list[dict[str, object]]:
             if kind == "model" and path.suffix.lower() in {".glb", ".ply"}:
                 item["preview_format"] = path.suffix.lower().removeprefix(".")
             result.append(item)
-    state = proxe.read_state(run_dir)
-    edited = proxe.safe_run_file(run_dir, state.get("latest_result"))
-    if edited is not None:
-        result.append({"label": "AI 修改后的 3D 模型", "relative": edited.relative_to(run_dir).as_posix(),
-                       "kind": "model", "size": edited.stat().st_size,
-                       "mtime_ns": edited.stat().st_mtime_ns,
-                       "url": "/file?path=" + urllib.parse.quote(str(edited)), "preview_format": "glb"})
     ldraw_available = (LDRAW_ROOT / "parts").is_dir() and (LDRAW_ROOT / "LDConfig.ldr").is_file()
     lego_models: list[tuple[int, Path]] = []
     for path in run_dir.glob("lego-*/model.mpd"):
@@ -325,6 +319,34 @@ def artifact_groups(run_dir: Path | None) -> list[dict[str, object]]:
                 "stale": bool(previous and not latest and branch_stage is not None
                               and stage_order[artifact_stage(relative)] >= stage_order[branch_stage]),
             })
+    edit_state = proxe.read_state(run_dir)
+    edited = proxe.safe_run_file(run_dir, edit_state.get("latest_result"))
+    original_model = proxe.original_model(run_dir)
+    if edited and original_model:
+        relative = original_model.relative_to(run_dir).as_posix()
+        for index, group in enumerate(groups):
+            if group["relative"] != relative:
+                continue
+            original = group["original"]
+            if original is None:
+                break
+            candidate = dict(original)
+            candidate.update({
+                "label": "AI 修改版 3D 模型",
+                "url": "/file?path=" + urllib.parse.quote(str(edited)),
+                "size": edited.stat().st_size,
+                "mtime_ns": edited.stat().st_mtime_ns,
+                "preview_format": "glb",
+            })
+            groups[index] = {
+                "relative": relative, "stage": "orientation", "original": original,
+                "candidate": candidate, "choice": (
+                    "candidate" if edit_state.get("selected_model") == str(edited)
+                    else "original" if edit_state.get("status") == "original" else None
+                ),
+                "stale": False, "ai_edit": True,
+            }
+            break
     return groups
 
 
@@ -432,7 +454,7 @@ class PipelineController:
             active_run_dir = self.run_dir
         imported = (active_run_dir is not None and
                     (active_run_dir / "pipeline_state.json").is_file() and
-                    json.loads((active_run_dir / "pipeline_state.json").read_text(encoding="utf-8")).get("pipeline") == "direct-3d-import")
+                    json.loads((active_run_dir / "pipeline_state.json").read_text(encoding="utf-8")).get("pipeline") in {"direct-3d-import", "existing-run-import"})
         if imported:
             if not payload.get("build_lego"):
                 raise ValueError("已上传 3D 模型，请勾选允许构建 LEGO")
@@ -472,6 +494,61 @@ class PipelineController:
             worker = threading.Thread(target=self._run, daemon=True)
             worker.start()
 
+    def set_uploaded_image(self, image: Path, output_dir: Path) -> None:
+        with self.lock:
+            if self.process is not None and self.process.poll() is None:
+                raise RuntimeError("流水线正在运行，暂时不能切换输入图片")
+            self.image = image
+            self.run_dir = output_dir
+            self.pipeline_run_dir = None
+            self.message = "图片已上传，等待运行"
+            self.returncode = None
+            self.started_at = None
+
+    def import_existing(self, identifier: str) -> Path:
+        if self.is_running() or AI_EDITOR.is_running():
+            raise RuntimeError("当前任务正在运行，请等待完成")
+        run_dir = existing_runs.copy_run(identifier, ROOT)
+        model = proxe.original_model(run_dir)
+        if model is None:
+            raise ValueError("已有结果缺少可编辑的 GLB")
+        (run_dir / "pipeline_state.json").write_text(json.dumps({
+            "pipeline": "existing-run-import", "stage": "oriented_review",
+            "textured": str(model), "source_run": identifier,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        with self.lock:
+            self.run_dir = run_dir
+            self.pipeline_run_dir = run_dir
+            foreground = run_dir / "input/foreground.png"
+            self.image = foreground if foreground.is_file() else None
+            self.message = "已加载队友的已有结果"
+            self.returncode = 0
+            self.started_at = None
+        return run_dir
+
+    def select_model_for_edit(self, value: str) -> Path:
+        with self.lock:
+            run_dir = self.run_dir
+        if run_dir is None or self.is_running() or AI_EDITOR.is_running():
+            raise RuntimeError("当前没有可选模型，或任务正在运行")
+        model = proxe.safe_run_file(run_dir, value)
+        if model is None or model.suffix.lower() != ".glb":
+            raise ValueError("请选择当前运行目录里的 GLB 模型")
+        allowed = {str(run_dir / item["relative"]) for item in artifact_inventory(run_dir)
+                   if item.get("preview_format") == "glb"}
+        latest = proxe.safe_run_file(run_dir, proxe.read_state(run_dir).get("latest_result"))
+        if str(model) not in allowed and model != latest:
+            raise ValueError("只能选择页面上展示的 GLB 模型")
+        state = proxe.read_state(run_dir)
+        state.pop("selected_model", None)
+        state.pop("selected_lego_input", None)
+        state["source_model"] = str(model)
+        for key in ("latest_result", "latest_lego_input", "latest_instruction", "latest_output_strategy", "latest_edit_plan"):
+            state.pop(key, None)
+        state["status"] = "source_selected"
+        proxe.write_state(run_dir, state)
+        return model
+
     def import_model(self, name: str, raw: bytes) -> tuple[Path, Path]:
         with self.lock:
             if self.process is not None and self.process.poll() is None:
@@ -500,6 +577,7 @@ class PipelineController:
         )
         with self.lock:
             self.run_dir = run_dir
+            self.pipeline_run_dir = run_dir
             self.image = None
             self.message = "已导入 3D 模型"
             self.returncode = 0
@@ -1128,6 +1206,7 @@ class AIEditController:
         state = proxe.read_state(run_dir)
         state.pop("selected_model", None)
         state.pop("selected_lego_input", None)
+        state.pop("source_model", None)
         state["status"] = "original"
         proxe.write_state(run_dir, state)
 
@@ -1201,13 +1280,13 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
 .artifact{position:relative}.artifact.choice-card>.version-tag{position:absolute;top:10px;right:10px;z-index:2;margin:0;padding:5px 8px;border:1px solid #b8d8bb;border-radius:999px;background:rgba(230,246,231,.92);box-shadow:0 2px 8px #17342122;pointer-events:none}.artifact>.stale-tag{position:absolute;top:10px;right:10px;z-index:2;margin:0;padding:5px 8px;border:1px solid #e3c96f;border-radius:999px;color:#765f21;background:rgba(255,240,191,.94);box-shadow:0 2px 8px #43350c22;pointer-events:none;font-size:11px;line-height:normal}
 @media(max-width:900px){.grid{grid-template-columns:1fr}.artifacts{grid-template-columns:1fr 1fr}.hero{align-items:start;flex-direction:column}}@media(max-width:560px){.shell{padding:14px}.artifacts,.checks{grid-template-columns:1fr}.steps{grid-template-columns:1fr 1fr}.hero h1{font-size:25px}}
 @media(max-width:1100px){.assistant-open .shell{margin-right:0}.assistant-panel{width:min(470px,100vw)}}@media(max-width:560px){.artifact-pair{grid-column:1}.pair-cards{grid-template-columns:1fr}}
-.editor-source{padding:10px;border-bottom:1px solid var(--line)}.editor-source .model-preview{height:220px}.editor-source .source-actions{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.editor-source .source-label{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.upload-preview{display:flex;align-items:center;gap:10px;margin-top:9px;padding:8px;border:1px solid var(--line);border-radius:10px;background:#f7f5ee;font-size:12px}.upload-preview[hidden]{display:none}.upload-preview img{width:72px;height:72px;object-fit:contain}.existing-run{margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:10px}.artifact-heading{display:flex;justify-content:space-between;align-items:center;gap:10px}.artifact-heading button{font-size:12px;padding:7px 10px}
 </style></head>
 <body><div class="shell">
 <div class="hero"><div><h1>2D → Hunyuan → UniTEX → LEGO</h1><p>本地实验控制台 · 阶段验收 · 断点续跑</p></div><div id="badge" class="badge">就绪</div></div>
 <div class="grid"><section class="panel"><h2>输入与运行设置</h2>
-<label>图片路径</label><div class="fileline"><input id="imagePath" type="text" value="__DEFAULT_IMAGE__"><button onclick="document.getElementById('file').click()">上传图片</button></div><input id="file" type="file" accept="image/*" hidden onchange="uploadFile(this)">
-<label>输出目录（留空自动生成）</label><input id="outputDir" type="text" placeholder="留空使用项目目录下的 runs 文件夹">
+<label>输入图片</label><div class="fileline"><input id="imagePath" type="text" value="__DEFAULT_IMAGE__" placeholder="上传图片，或填写服务器上的绝对路径"><button onclick="document.getElementById('file').click()">上传图片</button></div><input id="file" type="file" accept=".png,.jpg,.jpeg,.webp" hidden onchange="uploadFile(this)"><div id="inputUploadPreview" class="upload-preview" hidden><img id="inputPreview" alt="上传的输入图片"><span id="uploadStatus"></span></div><p class="hint">Mac 本机路径不能直接填在这里；使用“上传图片”后会自动写入服务器路径。</p>
+<label>输出目录（留空自动生成）</label><input id="outputDir" type="text" placeholder="留空使用项目目录下的 runs 文件夹"><div id="existingRunBox" class="existing-run" hidden><label>直接加载队友已有结果</label><div class="fileline"><select id="existingRun"></select><button type="button" onclick="importExistingRun()">加载结果</button></div><p class="hint">加载中间产物后可以直接预览、修改 3D 模型，无需重新生成。</p></div>
 <div class="checks">
 <label class="check"><input id="acceptPre" type="checkbox"><span>已检查抠图<br><small>允许进入 Hunyuan</small></span></label>
 <label class="check"><input id="acceptGeo" type="checkbox"><span>已检查几何<br><small>允许进入 UniTEX</small></span></label>
@@ -1224,18 +1303,12 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
 </section>
 <section class="panel"><div class="steps" id="steps"><div class="step">输入</div><div class="step">Hunyuan 几何</div><div class="step">UniTEX 六视图</div><div class="step">贴图与校正</div><button type="button" class="step step-action" onclick="open3DEditStep()">编辑 3D 模型</button><div class="step">LEGO</div></div>
 <div class="meta"><span id="runDir">尚未运行</span><span id="elapsed">0 秒</span></div><div id="notices" class="notices"></div><div id="log" class="log">等待任务……</div>
-<h2 style="margin-top:18px">产物与预览</h2><div id="artifacts" class="empty">运行后会在这里显示检查图和模型下载链接</div>
+<div class="artifact-heading"><h2 style="margin-top:18px">产物与预览</h2><button type="button" onclick="$('modelFile').click()">上传自己的 GLB</button><input id="modelFile" type="file" accept=".glb,model/gltf-binary" hidden onchange="upload3D(this)"></div><div id="artifacts" class="empty">运行后会在这里显示检查图和模型下载链接</div>
 </section></div></div>
 <button id="assistantLaunch" class="assistant-launch" onclick="toggleAssistant(true)">打开阶段助手</button>
 <aside id="assistantPanel" class="assistant-panel" hidden aria-label="阶段助手">
   <div class="assistant-head"><h2>阶段助手</h2><button onclick="toggleAssistant(false)" aria-label="收起助手">收起 ×</button></div>
   <div id="chatHistory" class="chat-history"><div class="chat-line">选择阶段或对话模型，然后描述想检查或修改的内容。修改会先生成候选，原版不会覆盖。</div></div>
-  <div id="editorSource" class="editor-source" hidden>
-    <div class="source-actions"><button type="button" onclick="useGenerated3D()">使用刚才生成的模型</button><button type="button" onclick="$('editorFile').click()">上传 GLB</button><input id="editorFile" type="file" accept=".glb,model/gltf-binary" hidden onchange="upload3D(this)"></div>
-    <div id="editorPreview" class="model-preview-missing">请先选择模型或上传 GLB</div>
-    <div id="editorSourceLabel" class="source-label"></div>
-    <div class="source-actions"><button type="button" id="accept3D" onclick="accept3DResult()" hidden>采用最新结果</button><button type="button" id="reset3D" onclick="reset3DResult()" hidden>恢复原模型</button><button type="button" id="resume3D" onclick="resume3DResult()" hidden>继续上次编辑</button><button type="button" id="stop3D" onclick="stop3DResult()" hidden>停止编辑</button></div>
-  </div>
   <div class="chat-compose"><textarea id="chatInput" placeholder="描述你想调整的地方……"></textarea>
     <div id="modelPicker" class="picker" role="menu" hidden>
       <div class="picker-title">按阶段 · 自动选择对话模型</div>
@@ -1249,7 +1322,7 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
       <button class="picker-option" role="menuitemradio" data-mode="model" data-value="qwen3.8-max" onclick="selectAssistant(this)">Qwen3.8 Max</button>
       <button class="picker-option" role="menuitemradio" data-mode="model" data-value="qwen3.8-flash" onclick="selectAssistant(this)">Qwen3.8 Flash</button>
     </div>
-    <div class="chat-actions"><button id="selectionButton" onclick="togglePicker()" aria-haspopup="menu" aria-expanded="false">Qwen3.8 Max ▾</button><button id="stopAssistantJob" type="button" hidden onclick="stopAssistantJob()">停止任务</button><button id="sendChat" class="primary" onclick="sendChat()">发送 ↑</button></div>
+    <div class="chat-actions"><button id="selectionButton" onclick="togglePicker()" aria-haspopup="menu" aria-expanded="false">Qwen3.8 Max ▾</button><button id="stopAssistantJob" type="button" hidden onclick="stopAssistantJob()">停止任务</button><button id="resume3D" type="button" hidden onclick="resume3DResult()">继续编辑</button><button id="stop3D" type="button" hidden onclick="stop3DResult()">停止编辑</button><button id="sendChat" class="primary" onclick="sendChat()">发送 ↑</button></div>
   </div>
 </aside><input id="revisionFile" type="file" hidden onchange="uploadRevision(this)">
 <script type="importmap">{"imports":{"three":"/static/three/three.module.js","three/addons/":"/static/three/addons/"}}</script>
@@ -1257,7 +1330,10 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
 <script>
 const $=id=>document.getElementById(id); let polling=false, artifactSignature=null, currentRunDir='', formInitialized=false, assistantSelection={mode:'model',value:'qwen3.8-max'}, chatTurns=[], pendingChoice=null, revisionRelative='', pointerStart=null, assistantJobId='', assistantJobLine=null;
 async function api(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});const d=await r.json();if(!r.ok)throw new Error(d.error||'请求失败');return d}
-async function uploadFile(input){if(!input.files.length)return;const f=input.files[0];const reader=new FileReader();reader.onload=async()=>{try{const d=await api('/api/upload',{name:f.name,data:reader.result.split(',')[1]});$('imagePath').value=d.path;$('outputDir').value=d.output_dir}catch(e){alert(e.message)}};reader.readAsDataURL(f)}
+function showInputPreview(url,text){$('inputPreview').src=url;$('uploadStatus').textContent=text;$('inputUploadPreview').hidden=false}
+async function uploadFile(input){const f=input.files[0];if(!f)return;try{showInputPreview(URL.createObjectURL(f),'正在上传 '+f.name+'…');const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error('无法读取所选图片'));reader.readAsDataURL(f)});const d=await api('/api/upload',{name:f.name,data});$('imagePath').value=d.path;$('outputDir').value=d.output_dir;showInputPreview(d.url,'已上传 '+f.name+'，可以开始运行');formInitialized=true;artifactSignature=null;refresh()}catch(e){$('uploadStatus').textContent='上传失败：'+e.message;alert('图片上传失败：'+e.message)}finally{input.value=''}}
+async function loadExistingRunOptions(){try{const r=await fetch('/api/examples');const d=await r.json();const runs=d.runs||[];$('existingRunBox').hidden=!runs.length;$('existingRun').innerHTML=runs.map(x=>`<option value="${esc(x.id)}">${esc(x.label)}</option>`).join('')}catch(e){$('existingRunBox').hidden=true}}
+async function importExistingRun(){try{const id=$('existingRun').value;if(!id)throw new Error('请选择已有结果');const d=await api('/api/import-run',{id});currentRunDir=d.run_dir;formInitialized=false;artifactSignature=null;await refresh();chatLine('assistant','已加载队友的已有结果，可以直接预览和修改 3D 模型。')}catch(e){alert('加载已有结果失败：'+e.message)}}
 async function startRun(){try{await api('/api/start',{image_path:$('imagePath').value,output_dir:$('outputDir').value,accept_preprocess:$('acceptPre').checked,accept_geometry:$('acceptGeo').checked,accept_unitex:$('acceptTex').checked,build_lego:$('buildLego').checked,bundle:$('bundle').checked,force:$('force').checked,projection:$('projection').value,target_studs:$('studs').value});polling=true;refresh()}catch(e){alert(e.message)}}
 async function stopRun(){try{await api('/api/stop',{})}catch(e){alert(e.message)}}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -1265,7 +1341,7 @@ function stageIndex(state,arts,edit){const s=state.stage||'';if(s==='complete')r
 function renderSteps(state,arts,edit){const idx=stageIndex(state,arts,edit);const nodes=[...$('steps').children];nodes.forEach((node,i)=>{node.className='step '+(i===4?'step-action ':'')+(i<idx?'active':i===idx?'wait':'');if(i===4){node.textContent=edit.running?'编辑 3D 中…':edit.latest_result&&!edit.selected&&edit.adoption_status==='review'?'编辑结果待采用':'编辑 3D 模型';if(state.stage==='complete'&&!edit.latest_result)node.className='step step-action skipped'}})}
 function open3DEditStep(){toggleAssistant(true);selectAssistant(document.querySelector('.picker-option[data-value="geometry_edit"]'));$('chatInput').focus()}
 function showRecommendation(r){const box=$('legoRecommendation');if(!r||r.status==='unavailable'){box.hidden=true;return}box.hidden=false;if(r.status==='ready'){box.innerHTML=`Legolization 推荐：<b>${r.target_studs} Stud</b><button type="button" onclick="$('studs').value=${r.target_studs}">使用推荐值</button><br><small>在 ${r.minimum}–${r.maximum} Stud 范围内按模型体素化质量自动选择；不保证最终一定可构建。</small>`}else if(r.status==='calculating'){box.textContent=`正在计算 Legolization 推荐宽度（${r.minimum}–${r.maximum} Stud）……`}else if(r.status==='waiting'){box.textContent='当前任务完成后计算 Legolization 推荐宽度……'}else{box.textContent='推荐宽度计算失败：'+(r.error||'未知错误')}}
-const intermediatePaths=new Set(['input/review.png','hunyuan/qa/shape_qa_overlay.png','unitex/mv_rgb.png','oriented/mesh_upright.glb','oriented/lego_input.ply']);
+const intermediatePaths=new Set(['input/review.png','hunyuan/qa/shape_qa_overlay.png','unitex/mv_rgb.png','oriented/lego_input.ply']);
 function renderArtifacts(groups){
   const signature=JSON.stringify(groups.map(g=>[g.relative,g.original?.mtime_ns,g.candidate?.mtime_ns,g.choice,g.stale,g.original?.comparison?.bundle]));
   if(signature===artifactSignature)return;
@@ -1280,7 +1356,7 @@ function renderArtifacts(groups){
         ?'<div class="model-preview-missing">未找到本机 LDraw 零件库；仍可下载 MPD</div>'
         :'';
   const artifactPath=a=>new URL(a.url,location.href).searchParams.get('path')||a.relative;
-  const card=(a,g,version,selectable=false)=>`<div class="artifact ${selectable?'choice-card':''}" ${selectable?`data-relative="${esc(g.relative)}" data-version="${version}"`:''}>${visual(a)}${selectable?`<span class="version-tag">${version==='original'?'原版':'修改版'}</span>`:''}${g.stale?'<span class="stale-tag">旧结果</span>':''}<div class="info">${a.comparison_url?`<a class="title-link" href="${esc(a.comparison_url)}" target="_blank" rel="noopener" title="${esc(artifactPath(a))}">${esc(a.label)}</a>`:`<b title="${esc(artifactPath(a))}">${esc(a.label)}</b>`}${a.preview_format==='mpd'?'<span class="credit">零件几何：<a href="https://www.ldraw.org/" target="_blank" rel="noopener">LDraw Parts Library</a></span>':''}<div class="artifact-actions"><a href="${esc(a.url)}" target="_blank" rel="noopener" title="打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB">打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB</a>${g.stage&&!g.stale?`<button class="upload-revision" type="button" data-upload="${esc(g.relative)}">上传修改版</button>`:''}</div>${selectable&&pendingChoice?.relative===g.relative&&pendingChoice?.version===version?`<div class="choice-confirm" role="group" aria-label="确认选择这版卡片"><div class="choice-prompt">确认选这版吗？</div><div class="choice-options"><button data-confirm="yes">是</button><button data-confirm="no">否</button></div></div>`:''}</div></div>`;
+  const card=(a,g,version,selectable=false)=>`<div class="artifact ${selectable?'choice-card':''}" ${selectable?`data-relative="${esc(g.relative)}" data-version="${version}" data-ai-edit="${g.ai_edit?'1':'0'}"`:''}>${visual(a)}${selectable?`<span class="version-tag">${version==='original'?'原版':'修改版'}</span>`:''}${g.stale?'<span class="stale-tag">旧结果</span>':''}<div class="info">${a.comparison_url?`<a class="title-link" href="${esc(a.comparison_url)}" target="_blank" rel="noopener" title="${esc(artifactPath(a))}">${esc(a.label)}</a>`:`<b title="${esc(artifactPath(a))}">${esc(a.label)}</b>`}${a.preview_format==='mpd'?'<span class="credit">零件几何：<a href="https://www.ldraw.org/" target="_blank" rel="noopener">LDraw Parts Library</a></span>':''}<div class="artifact-actions"><a href="${esc(a.url)}" target="_blank" rel="noopener" title="打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB">打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB</a>${a.preview_format==='glb'?`<button class="edit-model" type="button" data-edit-model="${esc(artifactPath(a))}">编辑这个模型</button>`:''}${g.ai_edit&&g.choice==='candidate'?`<button type="button" data-ai-reset="1">恢复原模型</button>`:''}${g.stage&&!g.stale&&!g.ai_edit?`<button class="upload-revision" type="button" data-upload="${esc(g.relative)}">上传修改版</button>`:''}</div>${selectable&&pendingChoice?.relative===g.relative&&pendingChoice?.version===version?`<div class="choice-confirm" role="group" aria-label="确认选择这版卡片"><div class="choice-prompt">确认选这版吗？</div><div class="choice-options"><button data-confirm="yes">是</button><button data-confirm="no">否</button></div></div>`:''}</div></div>`;
   const group=g=>g.candidate&&!g.choice?`<div class="artifact-pair"><div class="pair-title">${esc(g.original.label)} · 选择一版</div><div class="pair-cards">${card(g.original,g,'original',true)}${card(g.candidate,g,'candidate',true)}</div></div>`:card(g.choice==='candidate'?g.candidate:g.original,g,g.choice||'',false);
   const main=groups.filter(g=>!intermediatePaths.has(g.relative));
   const intermediate=groups.filter(g=>intermediatePaths.has(g.relative));
@@ -1292,27 +1368,25 @@ function renderArtifacts(groups){
 }
 function toggleAssistant(open){$('assistantPanel').hidden=!open;$('assistantLaunch').hidden=open;document.body.classList.toggle('assistant-open',open)}
 function togglePicker(){const p=$('modelPicker');p.hidden=!p.hidden;$('selectionButton').setAttribute('aria-expanded',String(!p.hidden))}
-function selectAssistant(button){assistantSelection={mode:button.dataset.mode,value:button.dataset.value};$("editorSource").hidden=button.dataset.value!=="geometry_edit";$('selectionButton').textContent=button.textContent.trim()+' ▾';$('modelPicker').hidden=true;$('selectionButton').setAttribute('aria-expanded','false');document.querySelectorAll('.picker-option').forEach(b=>b.setAttribute('aria-checked',String(b===button)))}
+function selectAssistant(button){assistantSelection={mode:button.dataset.mode,value:button.dataset.value};$('selectionButton').textContent=button.textContent.trim()+' ▾';$('modelPicker').hidden=true;$('selectionButton').setAttribute('aria-expanded','false');document.querySelectorAll('.picker-option').forEach(b=>b.setAttribute('aria-checked',String(b===button)))}
 document.querySelector('.picker-option[data-value="qwen3.8-max"]').setAttribute('aria-checked','true');
 function chatLine(role,text){const el=document.createElement('div');el.className='chat-line '+role;el.textContent=text;$('chatHistory').append(el);$('chatHistory').scrollTop=$('chatHistory').scrollHeight;return el}
 async function sendChat(){const message=$('chatInput').value.trim();if(!message)return;$('chatInput').value='';chatLine('user',message);const wait=chatLine('assistant','思考中……');$('sendChat').disabled=true;try{if(assistantSelection.value==='geometry_edit'){await api('/api/ai-edit/start',{instruction:message});wait.textContent='已提交 3D 模型修改，正在分析模型与指令……';poll3DEdit(wait);return}const d=await api('/api/assistant/chat',{run_dir:currentRunDir,mode:assistantSelection.mode,value:assistantSelection.value,message,history:chatTurns});wait.textContent=d.answer;chatTurns.push({role:'user',content:message},{role:'assistant',content:d.answer});if(d.job){assistantJobId=d.job.id;assistantJobLine=chatLine('assistant','任务已排队……');$('stopAssistantJob').hidden=false;pollAssistantJob()}}catch(e){wait.textContent=e.message}finally{$('sendChat').disabled=false}}
-let editorPreviewPath='';
-function show3DPreview(path,label){if(!path){$('editorPreview').className='model-preview-missing';$('editorPreview').textContent='请先选择模型或上传 GLB';return}if(path===editorPreviewPath)return;editorPreviewPath=path;const node=document.createElement('div');node.id='editorPreview';node.className='model-preview';node.dataset.modelFormat='glb';node.dataset.modelUrl='/file?path='+encodeURIComponent(path);$('editorPreview').replaceWith(node);$('editorSourceLabel').textContent=label+' · '+path.split('/').pop();window.mountModelPreviews?.()}
-async function useGenerated3D(){try{const d=await api('/api/ai-edit/select-generated',{});show3DPreview(d.model,'刚才生成的模型');refresh()}catch(e){chatLine('assistant',e.message)}}
-async function upload3D(input){const file=input.files[0];if(!file)return;try{if(!file.name.toLowerCase().endsWith('.glb'))throw new Error('请上传 GLB 文件');const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(file)});const d=await api('/api/ai-edit/upload',{name:file.name,data});currentRunDir=d.run_dir;show3DPreview(d.model,'上传的模型');chatLine('assistant','模型已加载。请输入你想修改的内容。');refresh()}catch(e){chatLine('assistant',e.message)}finally{input.value=''}}
-async function accept3DResult(){try{await api('/api/ai-edit/accept',{});chatLine('assistant','已采用最新模型，后续乐高化将使用它。');refresh()}catch(e){chatLine('assistant',e.message)}}
-async function reset3DResult(){try{await api('/api/ai-edit/reset',{});editorPreviewPath='';refresh();chatLine('assistant','已恢复原模型。')}catch(e){chatLine('assistant',e.message)}}
+async function upload3D(input){const file=input.files[0];if(!file)return;try{if(!file.name.toLowerCase().endsWith('.glb'))throw new Error('请上传 GLB 文件');const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(file)});const d=await api('/api/ai-edit/upload',{name:file.name,data});currentRunDir=d.run_dir;formInitialized=false;artifactSignature=null;await refresh();chatLine('assistant','3D 模型已加载。点击模型卡片的“编辑这个模型”，然后输入修改要求。')}catch(e){alert('上传 GLB 失败：'+e.message)}finally{input.value=''}}
+async function select3DModel(path){try{const d=await api('/api/ai-edit/select-source',{path});open3DEditStep();chatLine('assistant','已选择 '+d.model.split('/').pop()+'。请输入希望如何修改它。');refresh()}catch(e){chatLine('assistant',e.message)}}
+async function accept3DResult(){try{await api('/api/ai-edit/accept',{});chatLine('assistant','已采用最新模型，后续乐高化将使用它。');artifactSignature=null;refresh()}catch(e){chatLine('assistant',e.message)}}
+async function reset3DResult(){try{await api('/api/ai-edit/reset',{});artifactSignature=null;refresh();chatLine('assistant','已恢复原模型。')}catch(e){chatLine('assistant',e.message)}}
 async function stop3DResult(){try{await api('/api/ai-edit/stop',{});refresh()}catch(e){chatLine('assistant',e.message)}}
 async function resume3DResult(){try{await api('/api/ai-edit/resume',{});chatLine('assistant','已从上次中断处继续。');refresh()}catch(e){chatLine('assistant',e.message)}}
-async function poll3DEdit(line){try{const r=await fetch('/api/status');const d=await r.json();const edit=d.ai_editor||{};line.textContent=edit.message||'编辑中';$('stop3D').hidden=!edit.running;if(edit.running){setTimeout(()=>poll3DEdit(line),2000);return}if(edit.latest_result){const a=document.createElement('a');a.href=edit.latest_url;a.target='_blank';a.rel='noopener';a.textContent=' · 打开新模型';line.append(a);show3DPreview(edit.latest_result,'最新编辑结果')}refresh()}catch(e){line.textContent='编辑状态读取失败：'+e.message}}
+async function poll3DEdit(line){try{const r=await fetch('/api/status');const d=await r.json();const edit=d.ai_editor||{};line.textContent=edit.message||'编辑中';$('stop3D').hidden=!edit.running;if(edit.running){setTimeout(()=>poll3DEdit(line),2000);return}if(edit.latest_result){line.textContent+=' · 修改版已放到中间模型卡片，请选择原版或修改版。';artifactSignature=null}refresh()}catch(e){line.textContent='编辑状态读取失败：'+e.message}}
 async function pollAssistantJob(){if(!assistantJobId)return;try{const r=await fetch('/api/assistant/job');const d=await r.json();if(d.id!==assistantJobId)return;if(assistantJobLine)assistantJobLine.textContent=d.summary||d.state;if(['queued','running'].includes(d.state)){setTimeout(pollAssistantJob,2000)}else{$('stopAssistantJob').hidden=true;assistantJobId='';artifactSignature=null;refresh();if(d.result_path&&assistantJobLine){const a=document.createElement('a');a.href='/file?path='+encodeURIComponent(d.result_path);a.target='_blank';a.rel='noopener';a.textContent=' 打开结果';assistantJobLine.append(a)}}}catch(e){if(assistantJobLine)assistantJobLine.textContent='任务状态读取失败：'+e.message;$('stopAssistantJob').hidden=true;assistantJobId=''}}
 async function stopAssistantJob(){try{await api('/api/assistant/stop',{})}catch(e){alert(e.message)}}
 function openRevisionUpload(relative){revisionRelative=relative;const f=$('revisionFile');f.accept='.'+relative.split('.').pop();f.value='';f.click()}
 async function uploadRevision(input){const f=input.files[0];if(!f)return;try{const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]);r.onerror=reject;r.readAsDataURL(f)});await api('/api/revision/upload',{run_dir:currentRunDir,relative:revisionRelative,name:f.name,data});artifactSignature=null;refresh()}catch(e){alert(e.message)}}
 $('artifacts').addEventListener('pointerdown',e=>{pointerStart={x:e.clientX,y:e.clientY}});
-$('artifacts').addEventListener('click',async e=>{const upload=e.target.closest('[data-upload]');if(upload){openRevisionUpload(upload.dataset.upload);return}const confirm=e.target.closest('[data-confirm]');if(confirm){const choice=pendingChoice;if(!choice)return;if(confirm.dataset.confirm==='no'){pendingChoice=null;artifactSignature=null;refresh();return}try{await api('/api/revision/choose',{run_dir:currentRunDir,relative:choice.relative,choice:choice.version});pendingChoice=null;artifactSignature=null;refresh()}catch(err){alert(err.message)}return}if(e.target.closest('a,button'))return;const card=e.target.closest('.choice-card');if(!card)return;if(pointerStart&&Math.hypot(e.clientX-pointerStart.x,e.clientY-pointerStart.y)>6)return;pendingChoice={relative:card.dataset.relative,version:card.dataset.version};artifactSignature=null;refresh()});
-async function refresh(){try{const r=await fetch('/api/status');const d=await r.json();currentRunDir=d.run_dir||'';const edit=d.ai_editor||{};$("accept3D").hidden=!edit.latest_result||edit.running;$("reset3D").hidden=!edit.selected;$("resume3D").hidden=!edit.can_resume;$("stop3D").hidden=!edit.running;if(assistantSelection.value==="geometry_edit"&&edit.source&&!editorPreviewPath)show3DPreview(edit.source,"当前模型");if(!formInitialized){if(d.display_image)$('imagePath').value=d.display_image;if(d.display_output_dir)$('outputDir').value=d.display_output_dir;formInitialized=true}$('badge').textContent=(edit.running?edit.message:d.message)+((d.running||edit.running)?' · '+(edit.running?edit.elapsed:d.elapsed)+'s':'');$('runButton').disabled=d.running||edit.running;showRecommendation(d.lego_recommendation);const notices=d.notices||[];$('notices').innerHTML=notices.map(n=>`<div class="notice ${n.level==='error'?'error':'warning'}">${esc(n.text)}</div>`).join('');$('log').textContent=(edit.running||edit.logs?edit.logs:d.logs)||'等待任务……';$('log').scrollTop=$('log').scrollHeight;$('runDir').textContent=d.display_output_dir||'尚未运行';$('elapsed').textContent=d.elapsed+' 秒';renderSteps(d.pipeline_state||{},d.artifacts||[],edit);renderArtifacts(d.artifact_groups||[]);polling=!!(d.running||edit.running);if(polling)setTimeout(refresh,1200)}catch(e){polling=false;$('badge').textContent='连接失败'}}
-refresh();setInterval(()=>{if(!polling)refresh()},5000);
+$('artifacts').addEventListener('click',async e=>{const edit=e.target.closest('[data-edit-model]');if(edit){await select3DModel(edit.dataset.editModel);return}const aiReset=e.target.closest('[data-ai-reset]');if(aiReset){await reset3DResult();return}const upload=e.target.closest('[data-upload]');if(upload){openRevisionUpload(upload.dataset.upload);return}const confirm=e.target.closest('[data-confirm]');if(confirm){const choice=pendingChoice;if(!choice)return;if(confirm.dataset.confirm==='no'){pendingChoice=null;artifactSignature=null;refresh();return}try{if(choice.ai_edit){await api(choice.version==='candidate'?'/api/ai-edit/accept':'/api/ai-edit/reset',{})}else{await api('/api/revision/choose',{run_dir:currentRunDir,relative:choice.relative,choice:choice.version})}pendingChoice=null;artifactSignature=null;refresh()}catch(err){alert(err.message)}return}if(e.target.closest('a,button'))return;const card=e.target.closest('.choice-card');if(!card)return;if(pointerStart&&Math.hypot(e.clientX-pointerStart.x,e.clientY-pointerStart.y)>6)return;pendingChoice={relative:card.dataset.relative,version:card.dataset.version,ai_edit:card.dataset.aiEdit==='1'};artifactSignature=null;refresh()});
+async function refresh(){try{const r=await fetch('/api/status');const d=await r.json();currentRunDir=d.run_dir||'';const edit=d.ai_editor||{};$("resume3D").hidden=!edit.can_resume;$("stop3D").hidden=!edit.running;if(!formInitialized){if(d.display_image)$('imagePath').value=d.display_image;if(d.display_output_dir)$('outputDir').value=d.display_output_dir;if(d.display_image&&d.display_image.includes('/ui_uploads/'))showInputPreview('/file?path='+encodeURIComponent(d.display_image),'已上传的输入图片');formInitialized=true}$('badge').textContent=(edit.running?edit.message:d.message)+((d.running||edit.running)?' · '+(edit.running?edit.elapsed:d.elapsed)+'s':'');$('runButton').disabled=d.running||edit.running;showRecommendation(d.lego_recommendation);const notices=d.notices||[];$('notices').innerHTML=notices.map(n=>`<div class="notice ${n.level==='error'?'error':'warning'}">${esc(n.text)}</div>`).join('');$('log').textContent=(edit.running||edit.logs?edit.logs:d.logs)||'等待任务……';$('log').scrollTop=$('log').scrollHeight;$('runDir').textContent=d.display_output_dir||'尚未运行';$('elapsed').textContent=d.elapsed+' 秒';renderSteps(d.pipeline_state||{},d.artifacts||[],edit);renderArtifacts(d.artifact_groups||[]);polling=!!(d.running||edit.running);if(polling)setTimeout(refresh,1200)}catch(e){polling=false;$('badge').textContent='连接失败'}}
+loadExistingRunOptions();refresh();setInterval(()=>{if(!polling)refresh()},5000);
 </script></body></html>"""
 
 
@@ -1357,6 +1431,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif parsed.path == "/api/status":
             self.send_json({**CONTROLLER.status(), "ai_editor": AI_EDITOR.status(CONTROLLER.run_dir)})
+        elif parsed.path == "/api/examples":
+            self.send_json({"runs": existing_runs.list_runs()})
         elif parsed.path == "/api/assistant/job":
             self.send_json(ASSISTANT_JOBS.status() or {"state": "idle"})
         elif parsed.path == "/api/comparison":
@@ -1445,6 +1521,12 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/assistant/stop":
                 ASSISTANT_JOBS.stop()
                 self.send_json({"ok": True})
+            elif self.path == "/api/import-run":
+                run_dir = CONTROLLER.import_existing(str(data.get("id", "")))
+                self.send_json({"ok": True, "run_dir": str(run_dir)})
+            elif self.path == "/api/ai-edit/select-source":
+                model = CONTROLLER.select_model_for_edit(str(data.get("path", "")))
+                self.send_json({"ok": True, "model": str(model)})
             elif self.path == "/api/ai-edit/start":
                 if CONTROLLER.is_running():
                     raise RuntimeError("主流水线正在运行，请先等待它到达验收点")
@@ -1474,14 +1556,29 @@ class Handler(BaseHTTPRequestHandler):
                 AI_EDITOR.resume(CONTROLLER.run_dir)
                 self.send_json({"ok": True})
             elif self.path == "/api/upload":
+                if CONTROLLER.is_running() or AI_EDITOR.is_running():
+                    raise RuntimeError("当前任务正在运行，请稍后上传图片")
                 raw = base64.b64decode(str(data.get("data", "")), validate=True)
-                if not raw:
-                    raise ValueError("上传文件为空")
+                if not raw or len(raw) > 50 * 1024 * 1024:
+                    raise ValueError("图片为空或超过 50 MB")
+                name = str(data.get("name", "upload.png"))
+                if Path(name).suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                    raise ValueError("请上传 PNG、JPEG 或 WebP；HEIC 请先导出为 JPEG")
+                try:
+                    from io import BytesIO
+                    from PIL import Image
+                    with Image.open(BytesIO(raw)) as image:
+                        image.verify()
+                except Exception as exc:
+                    raise ValueError("图片无法解码，请重新导出为 PNG 或 JPEG") from exc
                 UPLOADS.mkdir(parents=True, exist_ok=True)
                 stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time_ns() % 1_000_000):06d}"
                 path = UPLOADS / f"{stamp}-{safe_name(str(data.get('name', 'upload.png')))}"
                 path.write_bytes(raw)
-                self.send_json({"path": str(path), "output_dir": str(default_run_dir(path))})
+                output_dir = default_run_dir(path)
+                CONTROLLER.set_uploaded_image(path, output_dir)
+                self.send_json({"path": str(path), "output_dir": str(output_dir),
+                                "url": "/file?path=" + urllib.parse.quote(str(path))})
             elif self.path == "/api/revision/upload":
                 run_dir = Path(str(data.get("run_dir", ""))).resolve()
                 if not run_dir.is_dir() or not within_root(run_dir):

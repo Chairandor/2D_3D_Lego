@@ -65,8 +65,10 @@ def original_model(run_dir: Path | None) -> Path | None:
 def current_model(run_dir: Path | None) -> Path | None:
     if run_dir is None:
         return None
-    selected = safe_run_file(run_dir, read_state(run_dir).get("selected_model"))
-    return selected or original_model(run_dir)
+    state = read_state(run_dir)
+    selected = safe_run_file(run_dir, state.get("selected_model"))
+    source = safe_run_file(run_dir, state.get("source_model"))
+    return selected or source or original_model(run_dir)
 
 
 def selected_lego_input(run_dir: Path | None) -> Path | None:

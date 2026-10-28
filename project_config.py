@@ -33,6 +33,7 @@ def load_project_config(root: Path) -> None:
         "PROXE_GPU",
         "LDRAW_DATA_HOME",
         "LDRAW_CACHE_HOME",
+        "EXAMPLE_RUNS_ROOT",
     }
     for key, value in values.items():
         if key not in allowed:
