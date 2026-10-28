@@ -55,7 +55,7 @@ def safe_run_file(run_dir: Path, value: object) -> Path | None:
 def original_model(run_dir: Path | None) -> Path | None:
     if run_dir is None:
         return None
-    for relative in ("oriented/mesh_upright.glb", "unitex/textured_mesh.glb"):
+    for relative in ("unitex/textured_mesh.glb", "oriented/mesh_upright.glb"):
         candidate = run_dir / relative
         if candidate.is_file():
             return candidate.resolve()
