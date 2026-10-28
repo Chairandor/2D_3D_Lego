@@ -7,6 +7,7 @@ import io
 import json
 import math
 import os
+from project_config import terminate_process_tree
 import re
 import secrets
 import subprocess
@@ -299,7 +300,7 @@ class AgentJobManager:
             self._set(ident, state="error", summary=str(exc))
 
     def _run_lego(self, ident: str, run_dir: Path, args: dict[str, object]) -> None:
-        python = self.lego_cli.with_name("python.exe")
+        python = self.lego_cli.with_name("python.exe" if os.name == "nt" else "python")
         if not python.is_file():
             raise RuntimeError("本机未找到 Legolization 虚拟环境")
         skill = str(args["skill"])
@@ -367,7 +368,8 @@ class AgentJobManager:
             env["LDRAWDIR"] = str(self.ldraw_dir)
         self._set(ident, summary=f"Legolization 正在执行 {skill}")
         process = subprocess.Popen(cmd, cwd=self.lego_root, env=env, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+                                   stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                   start_new_session=os.name != "nt")
         with self.lock:
             self.process = process
         try:
@@ -453,8 +455,4 @@ class AgentJobManager:
                 self.current.update(state="cancelled", summary="已停止助手任务；原有产物不变")
             process = self.process
         if process is not None and process.poll() is None:
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                               capture_output=True, check=False)
-            else:
-                process.terminate()
+            terminate_process_tree(process)

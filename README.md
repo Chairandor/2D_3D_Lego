@@ -12,13 +12,13 @@
      → Legolization → MPD / 可选 Bundle
 ```
 
-本仓库用于队友交流、查看实现和部署复现。包含我们编写的接入代码、网页 UI、分析工具、历史试验，以及说明书所需的固定源码快照和中文字体；模型权重、虚拟环境、LDraw 零件库、用户上传图片、历史运行结果和私人配置不在仓库中。这是源码版，首次使用需要配置本地环境与远端 UniTEX，尚未提供一键安装包。说明书属于可选本机组件，安装方法见 [部署说明](docs/SETUP.md)。
+本仓库用于队友交流、查看实现和部署复现。包含我们编写的接入代码、网页 UI、分析工具、历史试验，以及说明书所需的固定源码快照和中文字体；模型权重、虚拟环境、LDraw 零件库、用户上传图片、历史运行结果和私人配置不在仓库中。这是源码版，首次使用需要配置模型环境；支持 Windows 本机搭配远端 UniTEX，也支持整条流程部署在 Linux GPU 服务器，尚未提供一键安装包。说明书属于可选本机组件，安装方法见 [部署说明](docs/SETUP.md)。
 
 ## 当前能力
 
 - 有效透明底输入跳过重新抠图；实底图使用 Florence-2 定位与 SAM 2 候选掩膜。
 - Hunyuan 生成无色几何，UniTEX 负责六视图生成和最终贴图；六视图完成并不代表贴图完成。
-- UniTEX 在 Linux GPU 服务器运行，最终模型回传本地，方位校正和积木构建在本机执行。
+- 支持两种部署方式：Windows 本机配合远端 UniTEX；或在 Linux / A800 上完成全部阶段，UniTEX 直接本机调用，无需 SSH 回连。
 - 有输入、几何、六视图和 LEGO 构建的验收开关，支持断点续跑。
 - UI 展示图像与模型下载链接、停止任务、求解警告及 Legolization 原生推荐宽度；GLB、PLY 模型可在卡片中自动旋转、拖动查看，LEGO MPD 预览还需要本机 LDraw 零件库。
 - 可选的右侧阶段助手通过百炼 API 对话；可对输入透明底图、UniTEX 六视图生成图片候选，并调用一部分 Legolization CLI 工作流。候选须在卡片上确认，原版和旧阶段产物不会立即覆盖。
@@ -33,6 +33,8 @@
 3D 预览使用仓库内置的 Three.js 文件，无需访问外部 CDN；浏览器需支持 WebGL。`git clone` 后不会自动获得 LDraw 零件库。LEGO MPD 网页预览需要将完整零件库放在项目根目录的 `LDrawLibrary/ldraw/`，其中应有 `parts/`、`p/` 和 `LDConfig.ldr`。仅运行 Legolization 的 `parts sync` **不会自动放到这个路径**；按 [部署说明](docs/SETUP.md) 再复制或手工解压到位。缺库时普通 MPD 构建及下载链接仍可使用，但网页不会显示 LEGO 旋转预览。
 
 ## 开始使用
+
+Linux / A800 部署与现有环境复用见 [Linux 部署说明](docs/SETUP_LINUX.md)，使用 `bash pipeline_ui.sh --port 7865` 启动。下面是原有 Windows 方式。
 
 1. 按 [部署说明](docs/SETUP.md) 准备 Windows 本机和 Linux GPU 服务器。
 2. 将 `config.example.json` 复制为 `config.local.json`，填写自己的 SSH 地址、密钥路径和远端目录。若要使用阶段助手，另行设置 `DASHSCOPE_API_KEY` 环境变量；不设置也能运行主流水线。
@@ -55,7 +57,8 @@
 
 | 文件 / 目录 | 用途 |
 | --- | --- |
-| `pipeline_2d_to_lego.py` | 全流程编排、SSH 接入、朝向校正、颜色转换 |
+| `pipeline_2d_to_lego.py` | 全流程编排、本机 / SSH 着色接入、朝向校正、颜色转换 |
+| `pipeline_ui.sh` / `project_config.py` | Linux 启动、跨平台环境路径与任务进程组管理 |
 | `pipeline_ui.py` | 本地网页 UI、任务状态、产物列表、停止和警告 |
 | `ui_assistant.py` / `ui_agent_jobs.py` / `ui_revisions.py` | 阶段助手、后台操作、候选版本与分支状态 |
 | `ui_run_state.py` | 每个模型目录的当前分支、卡片与进度持久化 |

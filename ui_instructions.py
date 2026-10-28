@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
+from project_config import venv_executable
 
 
 def digest(path: Path) -> str:
@@ -154,7 +155,7 @@ class InstructionService:
         state = self.status(model)
         if state["state"] in {"ready", "queued", "generating"}:
             return state
-        python = self.workbench / ".venv/Scripts/python.exe"
+        python = venv_executable(self.workbench / ".venv", "python")
         if not python.is_file() or not (self.workbench / "run.py").is_file() or not (self.workbench / "config/local.json").is_file():
             raise ValueError("请先按说明配置本机 instructions_workbench 说明书环境")
         source_hash = digest(model)
@@ -205,7 +206,10 @@ class InstructionService:
                 self._update(source_hash, state="generating", log=str(log))
                 env = os.environ.copy()
                 env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1")
-                python = self.workbench / ".venv/Scripts/python.exe"
+                extra = self.root / ".runtime/instruction-deps"
+                if extra.is_dir():
+                    env["PYTHONPATH"] = str(extra) + os.pathsep + env.get("PYTHONPATH", "")
+                python = venv_executable(self.workbench / ".venv", "python")
                 command = [str(python), "-u", str(Path(__file__).resolve()), "--native-generate",
                            str(self.workbench), str(model), title]
                 with log.open("wb") as output:

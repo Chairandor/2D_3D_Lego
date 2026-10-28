@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -240,6 +241,7 @@ class PipelineUITests(unittest.TestCase):
                 list(pool.map(lambda _: ui_revisions._save_state(run_dir, {"version": 1, "pairs": {}}), range(40)))
             self.assertEqual(ui_revisions.load_state(run_dir)["pairs"], {})
 
+    @unittest.skipUnless(os.name == "nt", "Windows file replacement semantics")
     def test_revision_state_retries_a_transient_windows_replace_failure(self) -> None:
         with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
             run_dir = Path(temporary)

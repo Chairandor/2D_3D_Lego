@@ -32,21 +32,21 @@ import subprocess
 import sys
 from pathlib import Path
 
-from project_config import load_project_config
+from project_config import load_project_config, venv_executable
 
 ROOT = Path(__file__).resolve().parent
 load_project_config(ROOT)
-LEGACY_IMAGE_PYTHON = Path(os.environ.get("LEGACY_IMAGE_PYTHON", str(ROOT / ".venv-hunyuan" / "Scripts" / "python.exe")))
+LEGACY_IMAGE_PYTHON = Path(os.environ.get("LEGACY_IMAGE_PYTHON", str(venv_executable(ROOT / ".venv-hunyuan", "python"))))
 HUNYUAN_PYTHON = Path(
-    os.environ.get("HUNYUAN_PYTHON", str(ROOT / ".venv-hunyuan" / "Scripts" / "python.exe"))
+    os.environ.get("HUNYUAN_PYTHON", str(venv_executable(ROOT / ".venv-hunyuan", "python")))
 )
 LEGO_ROOT = ROOT / "legolization"
-LEGO_PYTHON = LEGO_ROOT / ".venv" / "Scripts" / "python.exe"
-LEGO_CLI = LEGO_ROOT / ".venv" / "Scripts" / "legolization.exe"
+LEGO_PYTHON = Path(os.environ.get("LEGO_PYTHON", str(venv_executable(LEGO_ROOT / ".venv", "python"))))
+LEGO_CLI = Path(os.environ.get("LEGO_CLI", str(venv_executable(LEGO_ROOT / ".venv", "legolization"))))
 LDRAW_DIR = ROOT / "LDrawLibrary" / "ldraw"
 SEGMENTATION_ROOT = ROOT / "segmentation_lab"
-FLORENCE_PYTHON = SEGMENTATION_ROOT / "florence_env" / "Scripts" / "python.exe"
-SAM2_PYTHON = SEGMENTATION_ROOT / "sam2_env" / "Scripts" / "python.exe"
+FLORENCE_PYTHON = venv_executable(SEGMENTATION_ROOT / "florence_env", "python")
+SAM2_PYTHON = venv_executable(SEGMENTATION_ROOT / "sam2_env", "python")
 FLORENCE_MODEL = SEGMENTATION_ROOT / "florence_models" / "Florence-2-large-ft"
 SAM2_CHECKPOINT = SEGMENTATION_ROOT / "sam2_models" / "sam2.1_hiera_small.pt"
 DEFAULT_UNITEX_HOST = os.environ.get("UNITEX_HOST", "user@your-gpu-host")
@@ -897,6 +897,15 @@ def run_unitex_remote(
     cache_run_dir: Path | None = None,
 ) -> Path | None:
     """Run a resumable UniTEX phase on the configured Linux GPU host."""
+    execution = os.environ.get("UNITEX_EXECUTION", "ssh")
+    if execution == "local":
+        from unitex_tools.local_execution import execute
+        return execute(reference, shape, output_dir, root=ROOT, remote_root=remote_root,
+                       steps=steps, seed=seed, projection=projection, gpu_index=gpu_index,
+                       phase=phase, force=force, run=run, six_view_override=six_view_override,
+                       cache_run_dir=cache_run_dir)
+    if execution != "ssh":
+        raise ValueError("UNITEX_EXECUTION must be local or ssh")
     # Do not pre-open the private key from Python. On managed Windows hosts the
     # interpreter may be denied direct access to .ssh even though the approved
     # OpenSSH process can use the key normally. ssh/scp will report a precise
@@ -1302,7 +1311,7 @@ def run_legolization_build(
     target_studs: int,
     strategy: str,
 ) -> None:
-    lego_python = require(LEGO_CLI.with_name("python.exe"), "legolization Python")
+    lego_python = require(LEGO_PYTHON, "legolization Python")
     model_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         str(lego_python), "-m", "legolization.main",
@@ -1327,7 +1336,7 @@ def run_legolization_bundle(
     target_studs: int,
     quality: str,
 ) -> None:
-    lego_python = require(LEGO_CLI.with_name("python.exe"), "legolization Python")
+    lego_python = require(LEGO_PYTHON, "legolization Python")
     bundle_dir.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         str(lego_python), "-m", "legolization.main",

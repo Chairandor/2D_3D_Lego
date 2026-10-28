@@ -100,8 +100,9 @@ class InstructionTests(unittest.TestCase):
 
     def test_double_click_launches_one_job_and_code_two_keeps_ready_booklet(self):
         wb = self.service.workbench
-        (wb / ".venv/Scripts").mkdir(parents=True)
-        (wb / ".venv/Scripts/python.exe").touch()
+        python = instructions.venv_executable(wb / ".venv", "python")
+        python.parent.mkdir(parents=True)
+        python.touch()
         (wb / "run.py").touch()
         save(wb / "config/local.json", {"output_root": str(self.root / "runs/lego-instructions")})
         launched, release = threading.Event(), threading.Event()

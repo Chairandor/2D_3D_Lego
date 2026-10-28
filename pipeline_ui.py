@@ -29,13 +29,13 @@ import ui_parts_pdf
 import ui_run_state
 
 
-from project_config import load_project_config
+from project_config import load_project_config, venv_executable, terminate_process_tree
 
 ROOT = Path(__file__).resolve().parent
 load_project_config(ROOT)
 PIPELINE = ROOT / "pipeline_2d_to_lego.py"
 LEGO_ROOT = ROOT / "legolization"
-LEGO_PYTHON = LEGO_ROOT / ".venv" / "Scripts" / "python.exe"
+LEGO_PYTHON = Path(os.environ.get("LEGO_PYTHON", str(venv_executable(LEGO_ROOT / ".venv", "python"))))
 SCALE_RECOMMENDER = ROOT / "lego_scale_recommendation.py"
 RECOMMENDATION_MIN_STUDS = 8
 RECOMMENDATION_MAX_STUDS = 128
@@ -78,6 +78,16 @@ def within_root(path: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def downloadable_file(path: Path) -> bool:
+    """Model downloads must never expose the server's private configuration."""
+    if not path.is_file() or not within_root(path):
+        return False
+    relative = path.resolve().relative_to(ROOT.resolve())
+    if any(part.startswith(".") and part != ".ui-details" for part in relative.parts):
+        return False
+    return path.name not in {"config.local.json", "local.json"} and path.suffix.lower() not in {".pem", ".key"}
 
 
 def bundle_comparison(run_dir: Path, studs: int, original: Path) -> dict[str, object] | None:
@@ -502,6 +512,7 @@ class PipelineController:
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                start_new_session=os.name != "nt",
             )
             with self.lock:
                 self.process = process
@@ -548,17 +559,7 @@ class PipelineController:
 
     @staticmethod
     def _terminate(process: subprocess.Popen[str]) -> None:
-        if process.poll() is not None:
-            return
-        if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:
-            process.terminate()
+        terminate_process_tree(process)
 
     def stop(self) -> None:
         with self.lock:
@@ -740,7 +741,7 @@ class PipelineController:
 
 
 CONTROLLER = PipelineController()
-ASSISTANT_JOBS = ui_agent_jobs.AgentJobManager(ROOT, LEGO_ROOT / ".venv" / "Scripts" / "legolization.exe", LEGO_ROOT, LDRAW_ROOT)
+ASSISTANT_JOBS = ui_agent_jobs.AgentJobManager(ROOT, Path(os.environ.get("LEGO_CLI", str(venv_executable(LEGO_ROOT / ".venv", "legolization")))), LEGO_ROOT, LDRAW_ROOT)
 
 
 HTML = r"""<!doctype html>
@@ -781,7 +782,7 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
 <label class="check"><input id="buildLego" type="checkbox"><span>允许构建 LEGO<br><small>最终批准</small></span></label>
 </div>
 <label>UniTEX 投影</label><select id="projection"><option value="ltm">LTM（推荐，补全不可见面）</option><option value="direct">Direct（快速诊断）</option></select>
-<label>远端 UniTEX GPU</label><select id="unitexGpu"><option value="1">GPU 1（推荐，当前空闲）</option><option value="0">GPU 0</option></select>
+<label>UniTEX GPU</label><select id="unitexGpu"><option value="1">GPU 1（推荐，当前空闲）</option><option value="0">GPU 0</option></select>
 <label>LEGO 宽度（Stud）</label><input id="studs" type="number" min="8" max="128" value="24">
 <div id="legoRecommendation" class="recommendation" hidden></div>
 <div class="checks"><label class="check"><input id="bundle" type="checkbox"><span>生成完整 Bundle</span></label><label class="check"><input id="force" type="checkbox"><span>强制重跑已有阶段</span></label></div>
@@ -984,7 +985,7 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/file":
             query = urllib.parse.parse_qs(parsed.query)
             path = Path(query.get("path", [""])[0]).resolve()
-            if not path.is_file() or not within_root(path):
+            if not downloadable_file(path):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
