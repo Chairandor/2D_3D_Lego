@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -76,6 +77,14 @@ class PipelineUITests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
             public, branch, image = self._completed_texture_revision(Path(temporary))
             ui_revisions.remember_active_run(branch, pipeline_ui.ROOT)
+            another_image = Path(temporary) / "another.png"
+            another_image.write_bytes(b"another image")
+            with self.assertRaises(ValueError) as error:
+                pipeline_ui.build_command(
+                    {"image_path": str(another_image), "output_dir": str(public)},
+                    active_run_dir=None,
+                )
+            self.assertIn(f"原始输入：{image}", str(error.exception))
             other = Path(temporary) / "other"
             other.mkdir()
             for active in (None, other, public):
@@ -240,6 +249,7 @@ class PipelineUITests(unittest.TestCase):
                 list(pool.map(lambda _: ui_revisions._save_state(run_dir, {"version": 1, "pairs": {}}), range(40)))
             self.assertEqual(ui_revisions.load_state(run_dir)["pairs"], {})
 
+    @unittest.skipUnless(os.name == "nt", "Windows file replacement semantics")
     def test_revision_state_retries_a_transient_windows_replace_failure(self) -> None:
         with tempfile.TemporaryDirectory(dir=pipeline_ui.ROOT) as temporary:
             run_dir = Path(temporary)

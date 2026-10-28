@@ -11,6 +11,16 @@ id_rsa*
 *.sftp
 
 # Python environments, caches and generated outputs
+.runtime/
+.venv-hunyuan
+instructions_workbench/.venv
+weights
+LDrawLibrary
+Hunyuan3D-2
+legolization
+external/UniTEX
+segmentation_lab/*_env
+segmentation_lab/florence_models
 # Local symlinks to shared server resources are files in Git's view.
 .venv-hunyuan
 LDrawLibrary

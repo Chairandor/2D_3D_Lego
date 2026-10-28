@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
+from project_config import venv_executable
 
 
 def digest(path: Path) -> str:
@@ -213,6 +214,9 @@ class InstructionService:
                 self._update(source_hash, state="generating", log=str(log))
                 env = os.environ.copy()
                 env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1")
+                extra = self.root / ".runtime/instruction-deps"
+                if extra.is_dir():
+                    env["PYTHONPATH"] = str(extra) + os.pathsep + env.get("PYTHONPATH", "")
                 python = self.python_executable()
                 command = [str(python), "-u", str(Path(__file__).resolve()), "--native-generate",
                            str(self.workbench), str(model), title]
