@@ -1,0 +1,188 @@
+"""Strategy registry: names the pipeline and CLI can instantiate.
+
+Adding a strategy means writing a factory here — the CLI ``--strategy``
+choices and the pipeline dispatch both derive from this table.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, TypedDict
+
+from legolization.placement.global_exact import GlobalExactStrategy
+from legolization.placement.greedy import GreedyStrategy
+from legolization.placement.layered import (
+    BeautyStrategy,
+    BeautyWeights,
+    BondStrategy,
+    FastStrategy,
+    KollskerStrategy,
+    SmGaConfig,
+    SmGaStrategy,
+)
+from legolization.placement.luo import LuoStrategy
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from legolization.catalog import Catalog
+    from legolization.pipeline import PipelineConfig
+    from legolization.placement.base import PlacementStrategy
+
+    StrategyFactory = Callable[[Catalog, PipelineConfig], PlacementStrategy]
+
+
+def strategy_names() -> tuple[str, ...]:
+    """Ordinary heuristic strategy names used by comparisons and sweeps."""
+    return tuple(sorted(name for name in _STRATEGIES if name != "global-exact"))
+
+
+def make_strategy(
+    name: str,
+    *,
+    catalog: Catalog,
+    config: PipelineConfig,
+) -> PlacementStrategy:
+    """Instantiate a registered strategy from the pipeline configuration."""
+    try:
+        factory = _STRATEGIES[name]
+    except KeyError:
+        known = ", ".join(sorted(_STRATEGIES))
+        msg = f"unknown strategy {name!r}; choose from: {known}"
+        raise ValueError(msg) from None
+    return factory(catalog, config)
+
+
+class _FailMaxKwargs(TypedDict, total=False):
+    fail_max: int
+
+
+def _fail_max_override(config: PipelineConfig) -> _FailMaxKwargs:
+    """Build the optional improve_connectivity override kwargs.
+
+    Validation lives here rather than on the frozen PipelineConfig:
+    every strategy factory funnels through this override, so a negative
+    cap fails at construction instead of silently disabling the
+    connectivity pass (PR #18 review).
+    """
+    if config.connectivity_fail_max is None:
+        return {}
+    if config.connectivity_fail_max < 0:
+        msg = f"connectivity_fail_max must be >= 0, got {config.connectivity_fail_max}"
+        raise ValueError(msg)
+    return {"fail_max": config.connectivity_fail_max}
+
+
+def _make_greedy(catalog: Catalog, config: PipelineConfig) -> PlacementStrategy:
+    return GreedyStrategy(
+        catalog=catalog,
+        weights=config.weights,
+        solver_config=config.solver,
+        refine=config.refine,
+        **_fail_max_override(config),
+    )
+
+
+def _make_luo(catalog: Catalog, config: PipelineConfig) -> PlacementStrategy:
+    return LuoStrategy(
+        catalog=catalog,
+        solver_config=config.solver,
+        colour_mode=config.colour_mode,
+        colour_weight=config.colour_weight,
+        refine=config.refine,
+        time_budget_s=config.time_budget_s,
+        **_fail_max_override(config),
+    )
+
+
+def _make_bond(catalog: Catalog, config: PipelineConfig) -> PlacementStrategy:
+    return BondStrategy(
+        catalog=catalog,
+        weights=config.weights,
+        solver_config=config.solver,
+        time_budget_s=config.time_budget_s,
+        progress=config.progress,
+        milp_bridge=config.milp_bridge,
+        bridge_rephase=config.bridge_rephase,
+        hybrid_bridge=config.hybrid_bridge,
+        **_fail_max_override(config),
+    )
+
+
+def _make_fast(catalog: Catalog, config: PipelineConfig) -> PlacementStrategy:
+    return FastStrategy(
+        catalog=catalog,
+        weights=config.weights,
+        solver_config=config.solver,
+        time_budget_s=config.time_budget_s,
+        progress=config.progress,
+        milp_bridge=config.milp_bridge,
+        bridge_rephase=config.bridge_rephase,
+        hybrid_bridge=config.hybrid_bridge,
+        **_fail_max_override(config),
+    )
+
+
+def _make_smga(catalog: Catalog, config: PipelineConfig) -> PlacementStrategy:
+    return SmGaStrategy(
+        catalog=catalog,
+        weights=config.weights,
+        solver_config=config.solver,
+        time_budget_s=config.time_budget_s,
+        progress=config.progress,
+        config=SmGaConfig(max_generations=config.ga_generations),
+        milp_bridge=config.milp_bridge,
+        bridge_rephase=config.bridge_rephase,
+        hybrid_bridge=config.hybrid_bridge,
+        **_fail_max_override(config),
+    )
+
+
+def _make_beauty(catalog: Catalog, config: PipelineConfig) -> PlacementStrategy:
+    return BeautyStrategy(
+        catalog=catalog,
+        weights=config.weights,
+        solver_config=config.solver,
+        time_budget_s=config.time_budget_s,
+        progress=config.progress,
+        beauty=BeautyWeights.preset(config.beauty_preset),
+        milp_bridge=config.milp_bridge,
+        bridge_rephase=config.bridge_rephase,
+        hybrid_bridge=config.hybrid_bridge,
+        **_fail_max_override(config),
+    )
+
+
+def _make_kollsker(catalog: Catalog, config: PipelineConfig) -> PlacementStrategy:
+    return KollskerStrategy(
+        catalog=catalog,
+        weights=config.weights,
+        solver_config=config.solver,
+        time_budget_s=config.time_budget_s,
+        progress=config.progress,
+        layer_time_s=config.milp_layer_time_s,
+        bond_weight=config.milp_bond_weight,
+        milp_bridge=config.milp_bridge,
+        bridge_rephase=config.bridge_rephase,
+        hybrid_bridge=config.hybrid_bridge,
+        **_fail_max_override(config),
+    )
+
+
+def _make_global_exact(catalog: Catalog, config: PipelineConfig) -> PlacementStrategy:
+    return GlobalExactStrategy(
+        catalog=catalog,
+        solver_config=config.solver,
+        config=config,
+    )
+
+
+_STRATEGIES: dict[str, StrategyFactory] = {
+    "greedy": _make_greedy,
+    "luo": _make_luo,
+    "bond": _make_bond,
+    "fast": _make_fast,
+    "smga": _make_smga,
+    "beauty": _make_beauty,
+    "kollsker": _make_kollsker,
+    "global-exact": _make_global_exact,
+}

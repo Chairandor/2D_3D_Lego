@@ -5,3 +5,5 @@ Pillow>=10
 trimesh>=4.4,<5
 opencv-python-headless>=4.8,<4.12
 pymatting>=1.1
+reportlab>=4.4
+pypdf>=6

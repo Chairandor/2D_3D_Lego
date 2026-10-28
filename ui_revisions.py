@@ -78,16 +78,18 @@ def _state_file_lock(path: Path):
 
 
 def load_state(run_dir: Path) -> dict[str, object]:
+    path = _state_path(run_dir)
     try:
-        path = _state_path(run_dir)
         # On Windows an open reader can prevent os.replace() from replacing
         # state.json, so readers must use the same lock as writers.
         with _state_file_lock(path):
             payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        if path.is_file():
+            raise ValueError(f"版本选择记录读取失败：{path}；不会自动退回初版") from exc
         return {"version": 1, "pairs": {}}
     if not isinstance(payload, dict) or not isinstance(payload.get("pairs"), dict):
-        return {"version": 1, "pairs": {}}
+        raise ValueError(f"版本选择记录格式无效：{path}；不会自动退回初版")
     return payload
 
 
@@ -96,17 +98,44 @@ def _save_state(run_dir: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.stem}.{secrets.token_hex(8)}.tmp")
     with _state_file_lock(path):
-        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        for attempt in range(8):
-            try:
-                temporary.replace(path)
-                return
-            except PermissionError:
-                # Antivirus, indexers, or other readers outside this process
-                # can briefly hold state.json without sharing delete access.
-                if os.name != "nt" or attempt == 7:
-                    raise
-                time.sleep(0.05 * (attempt + 1))
+        _write_state_locked(path, temporary, payload)
+    _mark_view_changed(run_dir)
+
+
+def _write_state_locked(path: Path, temporary: Path, payload: dict) -> None:
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    for attempt in range(8):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            # Antivirus/indexers may briefly deny replacement on Windows.
+            if os.name != "nt" or attempt == 7:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def _mark_view_changed(run_dir: Path) -> None:
+    import ui_run_state
+
+    ui_run_state.mark_changed(run_dir, Path(__file__).resolve().parent)
+
+
+def update_state(run_dir: Path, mutate) -> None:
+    """Read/modify/write under one file lock, preserving concurrent choices/pointer."""
+    path = _state_path(run_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _state_file_lock(path):
+        if path.is_file():
+            state = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(state, dict) or not isinstance(state.get("pairs"), dict):
+                raise ValueError("修改选择记录无效，已停止保存")
+        else:
+            state = {"version": 1, "pairs": {}}
+        mutate(state)
+        temporary = path.with_name(f"{path.stem}.{secrets.token_hex(8)}.tmp")
+        _write_state_locked(path, temporary, state)
+    _mark_view_changed(run_dir)
 
 
 def branch_parent(run_dir: Path, root: Path) -> Path | None:
@@ -129,6 +158,74 @@ def root_run_dir(run_dir: Path, root: Path) -> Path:
         if parent is None or parent in seen:
             break
         current = parent
+        seen.add(current)
+    return current
+
+
+def remember_active_run(run_dir: Path, root: Path) -> None:
+    """Persist the adopted branch on its public run, independent of this process."""
+    run_dir = run_dir.resolve()
+    if not run_dir.is_dir() or not run_dir.is_relative_to(root.resolve()):
+        raise ValueError("当前运行目录必须位于项目内")
+    public_run = root_run_dir(run_dir, root)
+    if load_state(public_run).get("active_run_dir") != str(run_dir):
+        update_state(public_run, lambda state: state.update(active_run_dir=str(run_dir)))
+    import ui_run_state
+
+    ui_run_state.remember(run_dir, root)
+
+
+def restore_active_run(run_dir: Path, root: Path) -> Path:
+    """Restore an adopted branch; migrate old state only when its choice is unique.
+
+    Branch timestamps cannot tell us what the user accepted. Older versions
+    retained the chosen input asset and branch metadata, so match those exact
+    paths instead of guessing which output folder is newest.
+    """
+    run_dir = run_dir.resolve()
+    root = root.resolve()
+    if not run_dir.is_dir() or not run_dir.is_relative_to(root):
+        return run_dir
+    import ui_run_state
+
+    if root_run_dir(run_dir, root) == run_dir:
+        recorded = ui_run_state.active_run(run_dir, root)
+        if recorded is not None:
+            return recorded
+    state = load_state(run_dir)
+    saved = state.get("active_run_dir")
+    if isinstance(saved, str):
+        selected = Path(saved).resolve()
+        if selected != run_dir and selected.is_dir() and selected.is_relative_to(root) and root_run_dir(selected, root) == run_dir:
+            return selected
+    current = run_dir
+    seen = {current}
+    for _ in range(32):
+        matches: set[Path] = set()
+        for relative, stage, field in (
+            ("input/foreground.png", "input", "source_image"),
+            ("unitex/mv_rgb.png", "texture", "six_view"),
+        ):
+            record = selected_pair(current, relative, root)
+            if record is None or record.get("choice") != "candidate":
+                continue
+            selected_asset = Path(str(record["candidate"])).resolve()
+            for metadata in (current / REVISION_DIR / "branches").glob(f"*/{BRANCH_FILE}"):
+                try:
+                    payload = json.loads(metadata.read_text(encoding="utf-8"))
+                    branch = metadata.parent.resolve()
+                    branch_stage = "texture" if payload.get("stage") == "texture" else "input"
+                    if (branch_stage == stage and branch_parent(branch, root) == current
+                            and Path(payload[field]).resolve() == selected_asset):
+                        matches.add(branch)
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue
+        if len(matches) != 1:
+            break
+        selected = matches.pop()
+        if selected in seen:
+            break
+        current = selected
         seen.add(current)
     return current
 
@@ -189,21 +286,25 @@ def add_candidate(
     if not content:
         raise ValueError("修改版文件为空")
     original = available_artifact(run_dir, relative, root)
+    six_view_lock = None
+    if relative == "unitex/mv_rgb.png":
+        from ui_six_view import constrain_candidate
+
+        content, six_view_lock = constrain_candidate(run_dir, content, root)
     ident = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
     target = run_dir / REVISION_DIR / "assets" / f"{ident}{suffix}"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(content)
-    state = load_state(run_dir)
-    pairs = state["pairs"]
-    assert isinstance(pairs, dict)
-    pairs[relative] = {
+    record = {
         "original": str(original),
         "candidate": str(target),
         "choice": None,
         "origin": origin,
         "created_at": time.time(),
     }
-    _save_state(run_dir, state)
+    if six_view_lock is not None:
+        record["six_view_lock"] = six_view_lock
+    update_state(run_dir, lambda state: state["pairs"].__setitem__(relative, record))
     return {"relative": relative, "candidate": str(target)}
 
 
@@ -218,6 +319,8 @@ def selected_pair(run_dir: Path, relative: str, root: Path) -> dict[str, object]
     except (KeyError, TypeError, ValueError):
         return None
     if not all(path.is_file() and path.is_relative_to(root.resolve()) for path in (original, candidate)):
+        if record.get("choice") in {"original", "candidate"}:
+            raise ValueError(f"已选择的版本关联文件缺失或无效：{relative}；不会自动退回初版")
         return None
     if record.get("choice") not in (None, "original", "candidate"):
         return None
@@ -241,11 +344,7 @@ def register_generated_pair(
         "original": str(original), "candidate": str(candidate), "candidate_mtime_ns": stamp,
         "choice": None, "origin": "generated", "created_at": time.time(),
     }
-    state = load_state(run_dir)
-    pairs = state["pairs"]
-    assert isinstance(pairs, dict)
-    pairs[relative] = record
-    _save_state(run_dir, state)
+    update_state(run_dir, lambda state: state["pairs"].__setitem__(relative, record))
     return record
 
 
@@ -254,15 +353,20 @@ def choose(run_dir: Path, relative: str, choice: str, root: Path) -> dict[str, o
         raise ValueError("只能选择原版或修改版")
     if not stage_for(relative):
         raise ValueError("无效的产物")
-    state = load_state(run_dir)
-    pairs = state["pairs"]
-    assert isinstance(pairs, dict)
     record = selected_pair(run_dir, relative, root)
     if record is None:
         raise ValueError("没有可选择的有效候选")
+    if relative == "unitex/mv_rgb.png" and choice == "candidate":
+        from ui_six_view import validate_candidate
+
+        record["six_view_lock"] = validate_candidate(run_dir, Path(record["candidate"]).read_bytes(), root)
+    def apply(state):
+        current = state["pairs"].get(relative)
+        if not current or current.get("candidate") != record["candidate"]:
+            raise ValueError("候选已更新，请刷新后重新选择")
+        current.update(record, choice=choice)
+    update_state(run_dir, apply)
     record["choice"] = choice
-    pairs[relative] = record
-    _save_state(run_dir, state)
     return record
 
 

@@ -1,0 +1,10 @@
+{
+  "renderer": "C:/Program Files/LeoCAD/LeoCAD.exe",
+  "ldraw_dir": "../LDrawLibrary/ldraw",
+  "output_root": "../runs/lego-instructions",
+  "reuse_roots": [],
+  "ground": true,
+  "step_size": 7,
+  "stability_policy": "warn",
+  "models": {}
+}

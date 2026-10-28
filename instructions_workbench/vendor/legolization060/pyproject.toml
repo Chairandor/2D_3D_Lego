@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "legolization"
+version = "0.6.0"
+description = "Course-local packaging of the supplied legolization 0.6.0 source snapshot"
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["legolization*"]
+
+[tool.setuptools.package-data]
+legolization = ["data/*.json", "data/corpus/*.toml"]

@@ -1,0 +1,702 @@
+"""Solve the RBE system and score per-brick stability.
+
+Follows StableLego's equilibrium-in-the-objective trick: equilibrium
+residuals are minimized, not constrained, so *any* structure — including
+floating or collapsing ones — yields a solution whose residuals localize
+the failure.
+
+Two modes:
+
+- ``lp`` (default): the convex program with the bilinear non-coexistence
+  constraint (a point cannot both press and pull) dropped. The relaxation
+  is provably **exact**, not optimistic: each contact point's normal and
+  drag columns are exact negatives of each other, so any solution with
+  both positive can subtract the common minimum from both, leaving every
+  equilibrium residual unchanged while strictly reducing the ``BETA``
+  term — every LP optimum therefore already satisfies non-coexistence.
+- ``milp``: enforces non-coexistence explicitly with big-M complementarity
+  (``normal·drag = 0`` per contact point) and boolean switches. Redundant
+  given the exactness above; kept as a debug cross-check of the LP.
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal
+
+import cvxpy as cp
+import highspy
+import numpy as np
+from scipy import sparse
+from scipy.optimize import linprog
+
+from legolization import telemetry
+from legolization.stability.constants import ALPHA, BETA, T_CAPACITY_N
+from legolization.stability.model import StabilityModel, build_model
+
+if TYPE_CHECKING:
+    from legolization.graph import ConnectionGraph
+    from legolization.layout import Layout
+
+_MILP_SOLVERS = ("HIGHS",)
+
+# HiGHS presolve occasionally errors on degenerate instances; retry
+# without it, then with the interior-point method.
+_LP_ATTEMPTS: tuple[tuple[str, dict[str, bool] | None], ...] = (
+    ("highs", None),
+    ("highs", {"presolve": False}),
+    ("highs-ipm", None),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SolverConfig:
+    """Tunables for the stability solve.
+
+    ``solver`` names a cvxpy backend for MILP mode (e.g. ``"SCIP"`` if
+    pyscipopt is installed); LP mode always uses scipy's HiGHS interface
+    directly.
+
+    ``drag_big_m``/``normal_big_m`` are artificial force ceilings for the
+    MILP's big-M complementarity switches only — they have no counterpart
+    in the papers and never constrain the (exact) LP mode.
+
+    ``engine`` selects the sequencer/verify prefix-solve engine only:
+    ``"highspy"`` uses the warm-started incremental
+    :class:`legolization.stability.prefix.PrefixSolver`; ``"scipy"`` keeps
+    every solve on this module's cold path. ``engine_cross_check`` makes
+    every warm probe also cold-solve and return the cold result while
+    recording drift (debug/CI). ``boundary_margin`` is the relative band
+    around the stability threshold within which warm verdicts are
+    discarded in favour of a cold solve.
+    """
+
+    mode: Literal["lp", "milp"] = "lp"
+    solver: str | None = None
+    tol_force: float = 1e-6
+    tol_torque: float = 1e-7
+    drag_big_m: float = 10.0 * T_CAPACITY_N
+    normal_big_m: float = 100.0
+    engine: Literal["scipy", "highspy"] = "highspy"
+    engine_cross_check: bool = False
+    boundary_margin: float = 0.02
+
+    # Appended fields only (positional compatibility).
+    rescue_direct_min_bricks: int = 200
+    """Rescue components at or above this size cold-solve through
+    highspy directly (drops the scipy wrapper overhead); smaller ones
+    keep the scipy-exact path that the 1e-6 equivalence tests pin."""
+
+    torque_z: bool = True
+    """Model the yaw torque row (τz) as a sixth residual per brick.
+
+    StableLego (paper and release) drops it; enabling it makes
+    horizontal knob presses meaningful for twist loads and switches side
+    contacts to four corner generators. Default follows the v5 A/B
+    verdict."""
+
+    paper_knob_rule: bool = True
+    """Per-knob contact points per the StableLego *paper* (edge knobs 3,
+    interior knobs 4 on min-dimension-3+ bodies) instead of the
+    release's uniform per-brick rule. Inert for the shipped catalog —
+    no part has min footprint dimension >= 3."""
+
+    rotate_contact_pattern: bool = True
+    """Rotate the contact-point pattern with the gripping brick's yaw.
+
+    The release keeps the asymmetric three-point triangle axis-aligned
+    regardless of orientation, scoring the same structure differently
+    when built rotated 90 degrees (measured: 36% on a single-knob
+    cantilever); rotating restores exact rotation invariance. Flipped
+    on by the v5 A/B (all StableLego fixture verdicts reproduce, zero
+    corpus verdict flips, no cost). False = release parity."""
+
+    ground_pull: bool = True
+    """Whether layer-0 contacts can pull down (StableLego
+    baseplate-style studs). False models bricks resting loose on a
+    table: the ground pushes but never pulls, so top-heavy structures
+    may tip."""
+
+    screen: Literal["off", "bricksim"] = "off"
+    """Reduced-QP candidate screen (BrickSim, arXiv:2603.16853).
+
+    ``"bricksim"`` screens ALNS/Luo candidates with the reduced
+    affine-field QP before the mandatory cold certify; a confident
+    screen rejection skips the cold solve for that candidate only —
+    accepted layouts always cold-solve. ``"off"`` preserves every
+    historical byte."""
+
+    screen_fields: Literal["restricted", "bricksim"] = "restricted"
+    """Reduced-field basis. ``"restricted"`` evaluates affine normal and
+    drag fields at the exact model's own contact points, making the
+    reduced polytope a provable restriction of the exact LP's (screen
+    errors skew conservative — false rejects only). ``"bricksim"`` is
+    the paper's three-component friction-pyramid basis, kept for
+    accuracy studies and never the production default."""
+
+    screen_margin: float = 0.1
+    """The screen's abstain band and rejection threshold — the screen
+    analogue of ``boundary_margin``, used in two places.
+
+    In ``screen._score_report`` it is the relative band around
+    ``T_CAPACITY_N``: a brick whose worst drag lands inside it makes the
+    whole report non-confident (``confident=False``) and callers fall
+    through to the cold solve. In ``ReducedScreen.should_reject`` it is
+    the deterioration threshold a candidate must clear to be rejected,
+    both relative to the baseline stress and as an absolute share of
+    capacity beyond it."""
+
+    screen_eps: float = 1e-5
+    """OSQP ``eps_abs``/``eps_rel`` for the screen QP."""
+
+    screen_max_iter: int = 20_000
+    """OSQP iteration cap for the screen QP; exceeding it falls back to
+    the cold solve (``stability.screen.nonconverged``). Converged solves
+    stop early, so the cap only prices slow convergence — measured:
+    vertical-only layouts finish well under 4_000 iterations, while
+    lateral-heavy (SNOT-clad) ones need ~5x that (a 134-brick clad
+    letter-h converges at ~20_000 in 0.7 s)."""
+
+    def __post_init__(self) -> None:
+        positive = (
+            self.tol_force,
+            self.tol_torque,
+            self.drag_big_m,
+            self.normal_big_m,
+            self.boundary_margin,
+            self.screen_margin,
+            self.screen_eps,
+        )
+        if any(not math.isfinite(value) or value <= 0 for value in positive):
+            msg = "solver tolerances, bounds, and margin must be finite and positive"
+            raise ValueError(msg)
+        if self.rescue_direct_min_bricks <= 0:
+            msg = "rescue_direct_min_bricks must be positive"
+            raise ValueError(msg)
+        if self.screen_max_iter <= 0:
+            msg = "screen_max_iter must be positive"
+            raise ValueError(msg)
+        if self.screen not in ("off", "bricksim"):
+            msg = f"screen must be 'off' or 'bricksim', got {self.screen!r}"
+            raise ValueError(msg)
+        if self.screen_fields not in ("restricted", "bricksim"):
+            msg = (
+                "screen_fields must be 'restricted' or 'bricksim', "
+                f"got {self.screen_fields!r}"
+            )
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class BrickScore:
+    """Stability verdict for one brick."""
+
+    brick_id: int
+    score: float
+    drag_max: float
+    in_equilibrium: bool
+
+
+@dataclass(frozen=True, slots=True)
+class StabilityResult:
+    """Structure-level stability analysis result."""
+
+    stable: bool
+    scores: dict[int, BrickScore] = field(default_factory=dict)
+    weakest_pair: tuple[int, int] | None = None
+    min_capacity: float = T_CAPACITY_N
+    status: str = "optimal"
+    objective: float = 0.0
+    interface_forces: dict[tuple[int, int], tuple[float, float]] = field(
+        default_factory=dict
+    )
+    """Cold-solve ``(normal, drag)`` sums keyed by physical interface pair."""
+
+    @property
+    def unstable_ids(self) -> frozenset[int]:
+        """Bricks that are collapsing (score of 1)."""
+        return frozenset(b for b, s in self.scores.items() if s.score >= 1.0)
+
+    @property
+    def max_score(self) -> float:
+        """The worst per-brick score (0 = relaxed, 1 = collapsing)."""
+        return max((s.score for s in self.scores.values()), default=0.0)
+
+
+class StabilityDeadlineError(TimeoutError):
+    """The caller's absolute stability deadline expired."""
+
+
+def build_model_from_config(
+    layout: Layout,
+    config: SolverConfig,
+    graph: ConnectionGraph | None = None,
+    *,
+    extra_masses: dict[int, float] | None = None,
+) -> StabilityModel:
+    """Build one RBE model using every configured physics switch.
+
+    Production callers use this helper so scoring, maximin selection,
+    localization, and sequencing cannot silently drift onto the low-level
+    :func:`build_model` defaults.
+    """
+    return build_model(
+        layout,
+        graph,
+        torque_z=config.torque_z,
+        paper_knob_rule=config.paper_knob_rule,
+        rotate_contact_pattern=config.rotate_contact_pattern,
+        ground_pull=config.ground_pull,
+        extra_masses=extra_masses,
+    )
+
+
+def analyze(
+    layout: Layout,
+    config: SolverConfig | None = None,
+    graph: ConnectionGraph | None = None,
+    *,
+    extra_masses: dict[int, float] | None = None,
+    deadline: float | None = None,
+) -> StabilityResult:
+    """Build and solve the RBE for a layout.
+
+    ``extra_masses`` adds per-brick external load in kilograms at each
+    brick's centroid (insertion presses, payloads); keys are brick ids.
+    """
+    if not len(layout):
+        return StabilityResult(stable=True)
+    config = config or SolverConfig()
+    with telemetry.span("stability.analyze", n=len(layout)):
+        model = build_model_from_config(
+            layout,
+            config,
+            graph,
+            extra_masses=extra_masses,
+        )
+        return solve_model(model, config, deadline=deadline)
+
+
+def solve_model(
+    model: StabilityModel,
+    config: SolverConfig | None = None,
+    *,
+    deadline: float | None = None,
+) -> StabilityResult:
+    """Solve an assembled system and score every brick."""
+    config = config or SolverConfig()
+    if config.mode == "lp":
+        return _solve_lp(model, config, deadline=deadline)
+    return _solve_milp(model, config, deadline=deadline)
+
+
+def _solve_lp(
+    model: StabilityModel,
+    config: SolverConfig,
+    *,
+    deadline: float | None = None,
+) -> StabilityResult:
+    """Solve the convex relaxation directly with HiGHS via scipy.
+
+    The refinement loops call this dozens of times, and cvxpy's per-call
+    problem construction dwarfs the actual solve — so the L1 objective is
+    assembled by hand: minimize ``sum(t) + alpha*sum(dmax_i) + beta*sum(d)`` subject to
+    ``-t <= A F + b <= t`` and ``d_j <= dmax_i``, all variables nonnegative.
+    """
+    with telemetry.span("stability.lp", n=model.brick_count):
+        return _solve_lp_body(model, config, deadline=deadline)
+
+
+def _lp_arrays(
+    model: StabilityModel,
+) -> tuple[np.ndarray, sparse.csr_matrix, np.ndarray, int]:
+    """Assemble the L1 system's ``(cost, A_ub, b_ub, force_count)``.
+
+    Shared by the scipy path and the direct-highspy rescue path so both
+    engines solve the byte-identical polytope.
+    """
+    rows, force_count_raw = model.a_matrix.shape
+    force_count = int(force_count_raw)
+    dmax_bricks = [bid for bid, cols in model.bottom_drag_cols.items() if cols.size]
+    dmax_index = {bid: force_count + rows + i for i, bid in enumerate(dmax_bricks)}
+    var_count = force_count + rows + len(dmax_bricks)
+
+    cost = np.zeros(var_count)
+    if model.contact_points:
+        cost[model.drag_cols] = BETA
+    cost[force_count : force_count + rows] = 1.0
+    cost[force_count + rows :] = ALPHA
+
+    identity = sparse.identity(rows, format="csr")
+    zero_dmax = sparse.csr_matrix((rows, len(dmax_bricks)))
+    upper = sparse.hstack([model.a_matrix, -identity, zero_dmax], format="csr")
+    lower = sparse.hstack([-model.a_matrix, -identity, zero_dmax], format="csr")
+    blocks = [upper, lower]
+    rhs = [-model.b_vector, model.b_vector]
+    drag_rows: list[tuple[int, int]] = [
+        (int(col), dmax_index[bid])
+        for bid in dmax_bricks
+        for col in model.bottom_drag_cols[bid]
+    ]
+    if drag_rows:
+        data = np.tile([1.0, -1.0], len(drag_rows))
+        row_idx = np.repeat(np.arange(len(drag_rows)), 2)
+        col_idx = np.asarray(drag_rows).ravel()
+        blocks.append(
+            sparse.csr_matrix(
+                (data, (row_idx, col_idx)),
+                shape=(len(drag_rows), var_count),
+            )
+        )
+        rhs.append(np.zeros(len(drag_rows)))
+
+    a_ub = sparse.csr_matrix(sparse.vstack(blocks, format="csr"))
+    b_ub = np.concatenate(rhs)
+    return cost, a_ub, b_ub, force_count
+
+
+def _solve_lp_body(
+    model: StabilityModel,
+    config: SolverConfig,
+    *,
+    deadline: float | None = None,
+) -> StabilityResult:
+    """Run the body of :func:`_solve_lp` without its telemetry span."""
+    cost, a_ub, b_ub, force_count = _lp_arrays(model)
+    result = None
+    with telemetry.span("stability.lp.linprog", n=model.brick_count):
+        for method, options in _LP_ATTEMPTS:
+            attempt_options: dict[str, bool | float] = {}
+            if options is not None:
+                attempt_options.update(options)
+            if (remaining := _remaining_time(deadline)) is not None:
+                attempt_options["time_limit"] = remaining
+            result = linprog(
+                c=cost,
+                A_ub=a_ub,
+                b_ub=b_ub,
+                bounds=(0, None),
+                method=method,
+                options=attempt_options or None,
+            )
+            if result.success and result.x is not None:
+                break
+    if result is None or not result.success or result.x is None:
+        if deadline is not None and time.monotonic() >= deadline:
+            msg = "stability deadline expired"
+            raise StabilityDeadlineError(msg)
+        message = result.message if result is not None else "no result"
+        msg = f"stability LP failed: {message}"
+        raise RuntimeError(msg)
+    return _score(
+        model,
+        config,
+        np.asarray(result.x[:force_count]),
+        "optimal" if result.status == 0 else str(result.message),
+        float(result.fun),
+    )
+
+
+def _solve_lp_highspy(
+    model: StabilityModel,
+    config: SolverConfig,
+) -> tuple[StabilityResult, bool]:
+    """One-shot direct-HiGHS solve of the same arrays the scipy path uses.
+
+    Kills scipy's per-call wrapper overhead on large cold solves. The
+    attempt chain mirrors ``_LP_ATTEMPTS`` (default presolve → presolve
+    off → IPM). Returns ``(result, near_boundary)`` — callers re-solve
+    through the scipy-exact path when the verdict sits near the
+    stability threshold. Raises ``RuntimeError`` when no attempt reaches
+    optimality.
+    """
+    cost, a_ub, b_ub, force_count = _lp_arrays(model)
+    rows, cols = a_ub.shape
+    csc = a_ub.tocsc()
+    lp = highspy.HighsLp()
+    lp.num_col_ = cols
+    lp.num_row_ = rows
+    lp.col_cost_ = cost
+    lp.col_lower_ = np.zeros(cols)
+    lp.col_upper_ = np.full(cols, np.inf)
+    lp.row_lower_ = np.full(rows, -np.inf)
+    lp.row_upper_ = b_ub
+    lp.a_matrix_.format_ = highspy.MatrixFormat.kColwise
+    lp.a_matrix_.start_ = np.asarray(csc.indptr, dtype=np.int64)
+    lp.a_matrix_.index_ = np.asarray(csc.indices, dtype=np.int64)
+    lp.a_matrix_.value_ = csc.data
+    solver = highspy.Highs()
+    solver.setOptionValue("output_flag", False)  # noqa: FBT003 - pybind API
+    solver.setOptionValue("threads", 1)
+    attempts = (("choose", "simplex"), ("off", "simplex"), ("choose", "ipm"))
+    optimal = False
+    for presolve, method in attempts:
+        solver.setOptionValue("presolve", presolve)
+        solver.setOptionValue("solver", method)
+        solver.passModel(lp)
+        solver.run()
+        if solver.getModelStatus() == highspy.HighsModelStatus.kOptimal:
+            optimal = True
+            break
+    if not optimal:
+        msg = f"direct HiGHS solve failed: {solver.getModelStatus()}"
+        raise RuntimeError(msg)
+    values = np.asarray(solver.getSolution().col_value)
+    result = _score(
+        model,
+        config,
+        values[:force_count],
+        "optimal",
+        float(solver.getInfo().objective_function_value),
+    )
+    return result, _near_boundary(model, config, values, force_count)
+
+
+def _near_boundary(
+    model: StabilityModel,
+    config: SolverConfig,
+    values: np.ndarray,
+    force_count: int,
+) -> bool:
+    """Whether any brick's verdict sits inside the cold-re-solve band.
+
+    Same thresholds as ``PrefixSolver._extract``: drag within
+    ``(1 ± boundary_margin)·T``, or any t-residual within a decade of
+    its tolerance.
+    """
+    margin = config.boundary_margin
+    low = (1.0 - margin) * T_CAPACITY_N
+    high = (1.0 + margin) * T_CAPACITY_N
+    rpb = model.rows_per_brick
+    tolerances = (config.tol_force,) * 3 + (config.tol_torque,) * (rpb - 3)
+    for i, brick_id in enumerate(model.brick_ids):
+        drag_cols = model.bottom_drag_cols[brick_id]
+        drag_max = float(values[drag_cols].max()) if drag_cols.size else 0.0
+        if low <= drag_max <= high:
+            return True
+        t_vals = values[force_count + rpb * i : force_count + rpb * (i + 1)]
+        if any(
+            tol / 10.0 < v < tol * 10.0
+            for v, tol in zip(t_vals, tolerances, strict=True)
+        ):
+            return True
+    return False
+
+
+@dataclass(frozen=True, slots=True)
+class MaximinResult:
+    """Luo's maximin friction capacity ``C_M`` for one structure."""
+
+    feasible: bool
+    capacity: float = 0.0
+
+
+def solve_maximin(model: StabilityModel) -> MaximinResult:
+    """Maximize the worst contact's friction margin under exact equilibrium.
+
+    Luo's eq. 6-8: maximize ``m`` subject to ``A F + b = 0``, ``F >= 0``,
+    and ``drag_j + m <= T`` for every drag variable. Unlike the RBE score
+    this yields a single strict ordering over layouts: positive capacity
+    means stable with margin, negative means unstable but comparable, and
+    an infeasible equilibrium means collapse. It carries no per-brick
+    localization — pair it with :func:`analyze` for failure seeds.
+    """
+    with telemetry.span("stability.maximin", n=model.brick_count):
+        return _solve_maximin_body(model)
+
+
+def _solve_maximin_body(model: StabilityModel) -> MaximinResult:
+    """Run the body of :func:`solve_maximin` without its telemetry span."""
+    rows, force_count = model.a_matrix.shape
+    var_count = force_count + 1
+    cost = np.zeros(var_count)
+    cost[-1] = -1.0  # maximize the margin
+    a_eq = sparse.hstack(
+        [model.a_matrix, sparse.csr_matrix((rows, 1))],
+        format="csr",
+    )
+    a_ub = None
+    b_ub = None
+    if model.contact_points:
+        drag_cols = model.drag_cols
+        data = np.ones(2 * drag_cols.size)
+        row_idx = np.repeat(np.arange(drag_cols.size), 2)
+        col_idx = np.stack(
+            [drag_cols, np.full(drag_cols.size, force_count, dtype=np.int64)],
+            axis=1,
+        ).ravel()
+        a_ub = sparse.csr_matrix(
+            (data, (row_idx, col_idx)),
+            shape=(drag_cols.size, var_count),
+        )
+        b_ub = np.full(drag_cols.size, T_CAPACITY_N)
+    bounds = [(0.0, None)] * force_count + [(None, T_CAPACITY_N)]
+    result = None
+    for method, options in _LP_ATTEMPTS:
+        result = linprog(
+            c=cost,
+            A_ub=a_ub,
+            b_ub=b_ub,
+            A_eq=a_eq,
+            b_eq=-model.b_vector,
+            bounds=bounds,
+            method=method,
+            options=options,
+        )
+        if result.success and result.x is not None:
+            return MaximinResult(feasible=True, capacity=float(result.x[-1]))
+        if result.status == 2:  # provably no equilibrium: collapsing
+            return MaximinResult(feasible=False)
+    message = result.message if result is not None else "no result"
+    msg = f"maximin LP failed: {message}"
+    raise RuntimeError(msg)
+
+
+def _solve_milp(
+    model: StabilityModel,
+    config: SolverConfig,
+    *,
+    deadline: float | None = None,
+) -> StabilityResult:
+    """Solve with big-M complementarity via cvxpy (exact but slower)."""
+    with telemetry.span("stability.milp", n=model.brick_count):
+        return _solve_milp_body(model, config, deadline=deadline)
+
+
+def _solve_milp_body(
+    model: StabilityModel,
+    config: SolverConfig,
+    *,
+    deadline: float | None = None,
+) -> StabilityResult:
+    """Run the body of :func:`_solve_milp` without its telemetry span."""
+    forces = cp.Variable(model.var_count, nonneg=True)
+    residual = model.a_matrix @ forces + model.b_vector
+
+    drag_terms: list[cp.Expression] = [
+        cp.max(forces[cols]) for cols in model.bottom_drag_cols.values() if cols.size
+    ]
+    objective = cp.norm1(residual)
+    if drag_terms:
+        objective = objective + ALPHA * cp.sum(cp.hstack(drag_terms))
+    if model.contact_points:
+        objective = objective + BETA * cp.sum(forces[model.drag_cols])
+
+    constraints: list[cp.Constraint] = []
+    if model.contact_points:
+        switch = cp.Variable(len(model.contact_points), boolean=True)
+        constraints.append(
+            forces[model.drag_cols] <= config.drag_big_m * switch,
+        )
+        constraints.append(
+            forces[model.normal_cols] <= config.normal_big_m * (1 - switch),
+        )
+
+    problem = cp.Problem(cp.Minimize(objective), constraints)
+    status = _solve_with_fallback(problem, config, deadline=deadline)
+    if forces.value is None:
+        msg = f"stability solve failed with status {status!r}"
+        raise RuntimeError(msg)
+
+    return _score(model, config, np.asarray(forces.value), status, problem.value)
+
+
+def _solve_with_fallback(
+    problem: cp.Problem,
+    config: SolverConfig,
+    *,
+    deadline: float | None = None,
+) -> str:
+    solvers = (config.solver,) if config.solver else _MILP_SOLVERS
+    last_error: Exception | None = None
+    last_status: str | None = None
+    for solver in solvers:
+        try:
+            remaining = _remaining_time(deadline)
+            if solver == "HIGHS":
+                # HiGHS owns one process-global scheduler. Leaving CVXPY at
+                # its auto thread count poisons later one-thread warm solvers.
+                kwargs: dict[str, int | float] = {"threads": 1}
+                if remaining is not None:
+                    kwargs["time_limit"] = remaining
+                problem.solve(solver=solver, **kwargs)
+            else:
+                problem.solve(solver=solver)
+        except (cp.SolverError, ValueError) as error:
+            last_error = error
+        else:
+            last_error = None
+            last_status = str(problem.status)
+            if problem.status in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
+                return last_status
+    msg = f"no solver in {solvers} found an optimal stability solution"
+    if last_status is not None:
+        msg = f"{msg}; last status: {last_status}"
+    raise RuntimeError(msg) from last_error
+
+
+def _remaining_time(deadline: float | None) -> float | None:
+    if deadline is None:
+        return None
+    if (remaining := deadline - time.monotonic()) <= 0:
+        msg = "stability deadline expired"
+        raise StabilityDeadlineError(msg)
+    return remaining
+
+
+def _score(
+    model: StabilityModel,
+    config: SolverConfig,
+    force_values: np.ndarray,
+    status: str,
+    objective: float | None,
+) -> StabilityResult:
+    residual = model.a_matrix @ force_values + model.b_vector
+    scores: dict[int, BrickScore] = {}
+    for i, brick_id in enumerate(model.brick_ids):
+        rpb = model.rows_per_brick
+        rows = residual[rpb * i : rpb * (i + 1)]
+        force_ok = bool(np.all(np.abs(rows[:3]) <= config.tol_force))
+        torque_ok = bool(np.all(np.abs(rows[3:]) <= config.tol_torque))
+        cols = model.bottom_drag_cols[brick_id]
+        drag_max = float(force_values[cols].max()) if cols.size else 0.0
+        in_equilibrium = force_ok and torque_ok
+        if not in_equilibrium or drag_max >= T_CAPACITY_N:
+            score = 1.0
+        else:
+            score = drag_max / T_CAPACITY_N
+        scores[brick_id] = BrickScore(
+            brick_id=brick_id,
+            score=score,
+            drag_max=drag_max,
+            in_equilibrium=in_equilibrium,
+        )
+
+    weakest_pair: tuple[int, int] | None = None
+    min_capacity = T_CAPACITY_N
+    for point in model.contact_points:
+        capacity = T_CAPACITY_N - float(force_values[point.drag_col])
+        if capacity < min_capacity:
+            min_capacity = capacity
+            weakest_pair = (point.below_id, point.above_id)
+
+    stable = all(s.score < 1.0 for s in scores.values())
+    interface_forces: dict[tuple[int, int], tuple[float, float]] = {}
+    for point in model.contact_points:
+        key = (point.below_id, point.above_id)
+        normal, drag = interface_forces.get(key, (0.0, 0.0))
+        interface_forces[key] = (
+            normal + float(force_values[point.normal_col]),
+            drag + float(force_values[point.drag_col]),
+        )
+    return StabilityResult(
+        stable=stable,
+        scores=scores,
+        weakest_pair=weakest_pair,
+        min_capacity=min_capacity,
+        status=status,
+        objective=float(objective) if objective is not None else 0.0,
+        interface_forces=interface_forces,
+    )

@@ -24,6 +24,7 @@ python scripts/fetch_upstreams.py
 | Legolization | `legolization/.venv` | 颜色转换、校正、尺寸推荐与积木构建 |
 | Florence-2 | `segmentation_lab/florence_env` | 实底图主体框检测 |
 | SAM 2 | `segmentation_lab/sam2_env` | 掩膜生成 |
+| 拼搭说明书（可选） | `instructions_workbench/.venv` | Python 3.12，原生步骤规划、LeoCAD 渲染和中文说明书 |
 
 ### Hunyuan 与 UI
 
@@ -92,6 +93,31 @@ Test-Path -LiteralPath .\LDrawLibrary\ldraw\LDConfig.ldr -PathType Leaf
 ```
 
 如果 UI 已经打开，放好零件库后刷新页面；已生成的 MPD 下载链接无需重新构建。零件库被 `.gitignore` 排除，不会随代码推送或克隆。
+
+### 可选：说明书、图文清单与 LEGO 详情
+
+LEGO 卡片名称会打开当前网页内的覆盖页。成品展示的总零件统计、彩色零件缩略图和图文清单 PDF 导出使用主 Legolization 环境与本机 LDraw。缩略图由浏览器按真实零件和颜色渲染；图文清单 PDF 需要该环境已安装 `Pillow` 和 `reportlab`，字体使用随附的 `instructions_workbench/assets/fonts/chinese.ttf`（无该字体时尝试 Windows 中文字体）。清单导出不要求先生成完整说明书。
+
+分步说明书还需要 **LeoCAD** 和独立的 Python **3.12** 环境。`instructions_workbench/` 已带运行源码、锁定依赖、Legolization 0.6.0 源码快照和中文字体；不包含虚拟环境、历史成品及个人配置。主流水线仍使用原来的 `legolization/.venv`。
+
+从项目根目录执行：
+
+```powershell
+uv venv --python 3.12 --seed instructions_workbench/.venv
+cd instructions_workbench
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1
+Copy-Item config/portable.example.json config/local.json
+notepad config/local.json
+```
+
+配置中 `renderer` 改为本机安装的 `LeoCAD.exe`，`ldraw_dir` 默认 `../LDrawLibrary/ldraw`，`output_root` 默认 `../runs/lego-instructions`。相对路径以 `instructions_workbench` 为基准，UI 的说明书输出目录必须在项目内。已有 `config/local.json` 请保留，不要用模板覆盖。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Run.ps1 -Mode check
+cd ..
+```
+
+在 UI 点击模型卡片名称 →「生成说明书」。已有匹配输入内容的完整结果直接打开，否则自动生成；关闭覆盖页后生成仍会继续。图文完成后进入步骤阅读，静力分析继续运行，累计最多 1800 秒。说明书生成成功与静力通过分别记录，超时或风险结果不撤回已生成图文。源码和独立命令见 [说明书工程说明](../instructions_workbench/README.md)。本机已验证真实小鸡图文产出、逐步阅读和零件清单下载；全新电脑仍需按以上步骤验收自己的环境。
 
 ### Florence-2 与 SAM 2
 

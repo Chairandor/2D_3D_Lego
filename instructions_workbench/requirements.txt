@@ -1,0 +1,14 @@
+# Tested in Python 3.12; the original working environment can be reused without reinstalling.
+numpy==2.3.5
+scipy==1.17.0
+cvxpy==1.9.3
+highspy==1.15.1
+pyldraw3==1.7.0
+trimesh==5.1.1
+filelock==4.1.1
+platformdirs==4.13.0
+jsonschema==4.26.0
+Pillow==12.3.0
+reportlab==4.4.9
+pypdf==6.10.0
+pdfplumber==0.11.9

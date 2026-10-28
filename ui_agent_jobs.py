@@ -20,13 +20,14 @@ from pathlib import Path
 from PIL import Image, ImageChops
 
 import ui_revisions
+import ui_six_view
 
 
 CHAT_TOOLS = [
     {
         "type": "function", "function": {
             "name": "edit_stage_image",
-            "description": "实际生成透明底输入或 UniTEX 六视图的修改版 PNG，原版不覆盖，用户稍后在卡片中选用。仅用于用户明确要求修改图片时。",
+            "description": "实际生成透明底输入或 UniTEX 六视图的修改版 PNG。六视图仅允许颜色修改：最初版本的蒙版、轮廓、边缘、背景、尺寸、六格位置永久固定，绝不允许修改几何或轮廓。仅用于用户明确要求修改图片时。",
             "parameters": {
                 "type": "object", "properties": {
                     "target": {"type": "string", "enum": ["input/foreground.png", "unitex/mv_rgb.png"]},
@@ -97,7 +98,10 @@ def _image_output_size(size: tuple[int, int]) -> tuple[int, int]:
     return tuple(max(16, math.floor(side * scale / 16) * 16) for side in size)
 
 
-def _image_edit(source: Path, instruction: str, target: str) -> bytes:
+def _image_edit(
+    source: Path, instruction: str, target: str,
+    *, reference: ui_six_view.SixViewReference | None = None,
+) -> bytes:
     if not 1 <= len(instruction.strip()) <= 1000:
         raise ValueError("图片修改要求必须为 1–1000 字")
     if source.stat().st_size > 10 * 1024 * 1024:
@@ -112,12 +116,21 @@ def _image_edit(source: Path, instruction: str, target: str) -> bytes:
                 "。保持透明背景、主体朝向和位置；不要新增背景、投影、文字或水印。"
             )
         else:
+            if reference is None:
+                raise ValueError("六视图修改必须提供最初版本的固定蒙版")
+            if output_size != size:
+                raise ValueError("当前六视图尺寸无法由图像 API 原尺寸返回，已拒绝自动缩放")
+            original, _ = reference.lock(original)
             prompt = (
                 "这是同一 3D 模型固定六相机视角的 3x2 贴图网格。" + instruction +
-                "。严格保持六格的位置、各视角轮廓、相机视角和背景不变；"
-                "只修正物体表面颜色，所有视角的同一部位颜色一致，不加文字或水印。"
+                "。" + ui_six_view.RULES
             )
-        encoded = base64.b64encode(source.read_bytes()).decode("ascii")
+        if target == "unitex/mv_rgb.png":
+            locked_source = io.BytesIO()
+            original.save(locked_source, format="PNG")
+            encoded = base64.b64encode(locked_source.getvalue()).decode("ascii")
+        else:
+            encoded = base64.b64encode(source.read_bytes()).decode("ascii")
         payload = {
             "model": os.environ.get("DASHSCOPE_IMAGE_MODEL", "qwen-image-2.1-pro"),
             "input": {"messages": [{"role": "user", "content": [
@@ -168,12 +181,7 @@ def _image_edit(source: Path, instruction: str, target: str) -> bytes:
                     raise RuntimeError("生成图片与原主体位置完全不重合")
                 result_image.putalpha(alpha)
             else:
-                alpha_path = source.with_name("mv_alpha.png")
-                result_image = output.convert("RGB")
-                if alpha_path.is_file():
-                    with Image.open(alpha_path) as mask:
-                        if mask.size == size:
-                            result_image = Image.composite(result_image, original.convert("RGB"), mask.convert("L"))
+                result_image, _ = reference.lock(output)
             stream = io.BytesIO()
             result_image.save(stream, format="PNG")
             return stream.getvalue()
@@ -216,6 +224,8 @@ class AgentJobManager:
             source = self._selected_path(run_dir, relative)
             if not source.is_file():
                 raise ValueError("选定的图片尚未生成")
+            if relative == "unitex/mv_rgb.png":
+                ui_six_view.resolve_reference(run_dir, self.root)
         else:
             if args.get("skill") not in {
                 "prepare-lego-input", "legolize-model", "optimize-lego-build",
@@ -271,7 +281,11 @@ class AgentJobManager:
             if tool == "edit_stage_image":
                 relative = str(args["target"])
                 source = self._selected_path(run_dir, relative)
-                content = _image_edit(source, str(args["instruction"]), relative)
+                if relative == "unitex/mv_rgb.png":
+                    reference = ui_six_view.resolve_reference(run_dir, self.root)
+                    content = _image_edit(source, str(args["instruction"]), relative, reference=reference)
+                else:
+                    content = _image_edit(source, str(args["instruction"]), relative)
                 if self._is_cancelled(ident):
                     return
                 result = ui_revisions.add_candidate(
@@ -398,6 +412,9 @@ class AgentJobManager:
                 summary = f"{skill} 失败（退出码 {process.returncode}）{suffix}"
         self._set(ident, state="complete" if process.returncode == 0 else "partial" if process.returncode in {2, 3} else "error",
                   summary=summary, exit_code=process.returncode, result_path=result_path, relative=relative)
+        import ui_run_state
+
+        ui_run_state.mark_changed(run_dir, self.root)
 
     def _lego_model(self, run_dir: Path, studs: object) -> tuple[Path, str] | None:
         parent = ui_revisions.branch_parent(run_dir, self.root)
