@@ -87,3 +87,7 @@ python -m venv .venv-review
 - [SAM 2](https://github.com/facebookresearch/sam2) 与 [Florence-2-large-ft](https://huggingface.co/microsoft/Florence-2-large-ft)。
 
 接入脚本在上游仓库外运行，部分适配通过运行时替换实现，不修改上游磁盘源码。上游源码和权重按各自项目条款获取；本仓库没有把它们重新打包或授予统一许可，见 [来源与许可说明](THIRD_PARTY.md)。
+
+## 服务器上的 3D 模型编辑
+
+右侧阶段助手可切换到“修改 3D 模型”，选择流水线产物或上传 GLB 后输入文字指令。Prox-E 自动分析截图和文字，完成编辑并生成候选；采用候选后，LEGO 步骤读取该候选的 PLY。部署与配置见 [服务器 3D 编辑说明](docs/SERVER_3D_EDITOR.md)。

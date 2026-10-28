@@ -32,21 +32,21 @@ import subprocess
 import sys
 from pathlib import Path
 
-from project_config import load_project_config
+from project_config import load_project_config, venv_executable
 
 ROOT = Path(__file__).resolve().parent
 load_project_config(ROOT)
-LEGACY_IMAGE_PYTHON = Path(os.environ.get("LEGACY_IMAGE_PYTHON", str(ROOT / ".venv-hunyuan" / "Scripts" / "python.exe")))
+LEGACY_IMAGE_PYTHON = Path(os.environ.get("LEGACY_IMAGE_PYTHON", str(venv_executable(ROOT / ".venv-hunyuan", "python"))))
 HUNYUAN_PYTHON = Path(
-    os.environ.get("HUNYUAN_PYTHON", str(ROOT / ".venv-hunyuan" / "Scripts" / "python.exe"))
+    os.environ.get("HUNYUAN_PYTHON", str(venv_executable(ROOT / ".venv-hunyuan", "python")))
 )
 LEGO_ROOT = ROOT / "legolization"
-LEGO_PYTHON = LEGO_ROOT / ".venv" / "Scripts" / "python.exe"
-LEGO_CLI = LEGO_ROOT / ".venv" / "Scripts" / "legolization.exe"
+LEGO_PYTHON = venv_executable(LEGO_ROOT / ".venv", "python")
+LEGO_CLI = venv_executable(LEGO_ROOT / ".venv", "legolization")
 LDRAW_DIR = ROOT / "LDrawLibrary" / "ldraw"
 SEGMENTATION_ROOT = ROOT / "segmentation_lab"
-FLORENCE_PYTHON = SEGMENTATION_ROOT / "florence_env" / "Scripts" / "python.exe"
-SAM2_PYTHON = SEGMENTATION_ROOT / "sam2_env" / "Scripts" / "python.exe"
+FLORENCE_PYTHON = venv_executable(SEGMENTATION_ROOT / "florence_env", "python")
+SAM2_PYTHON = venv_executable(SEGMENTATION_ROOT / "sam2_env", "python")
 FLORENCE_MODEL = SEGMENTATION_ROOT / "florence_models" / "Florence-2-large-ft"
 SAM2_CHECKPOINT = SEGMENTATION_ROOT / "sam2_models" / "sam2.1_hiera_small.pt"
 DEFAULT_UNITEX_HOST = os.environ.get("UNITEX_HOST", "user@your-gpu-host")
@@ -207,6 +207,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="rerun stages even when their expected output already exists",
     )
+    parser.add_argument("--lego-input", type=Path, default=None, help="use an approved AI-edited PLY for LEGO")
     parser.add_argument("--stage", choices=("convert",), default=None, help=argparse.SUPPRESS)
     parser.add_argument("--glb", type=Path, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--ply", type=Path, default=None, help=argparse.SUPPRESS)
@@ -666,11 +667,18 @@ def convert_glb_to_ply(
 
     loaded = trimesh.load(glb_path, force=None, process=False)
     if isinstance(loaded, trimesh.Scene):
-        geoms = [
-            geom
-            for geom in loaded.geometry.values()
-            if isinstance(geom, trimesh.Trimesh)
-        ]
+        geoms = []
+        for geom in loaded.geometry.values():
+            if not isinstance(geom, trimesh.Trimesh):
+                continue
+            part = geom.copy()
+            # Each GLB component has its own UV atlas; bake before merging.
+            if part.visual is not None and hasattr(part.visual, "to_color"):
+                try:
+                    part.visual = part.visual.to_color()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"part texture bake skipped: {exc}", flush=True)
+            geoms.append(part)
         if not geoms:
             raise SystemExit(f"no triangle meshes inside {glb_path}")
         mesh = trimesh.util.concatenate(geoms)
@@ -1437,7 +1445,8 @@ def main() -> int:
     if six_view_override is not None and cache_run_dir is None:
         raise ValueError("--unitex-six-view requires --unitex-cache-run-dir")
     oriented_dir = run_dir / "oriented"
-    ply_path = oriented_dir / "lego_input.ply"
+    ply_path = (require(args.lego_input.expanduser().resolve(), "approved LEGO input")
+                if args.lego_input is not None else oriented_dir / "lego_input.ply")
     lego_name = f"lego-{args.target_studs}"
     model_path = run_dir / lego_name / "model.mpd"
     bundle_dir = run_dir / f"{lego_name}-bundle"
@@ -1604,16 +1613,15 @@ def main() -> int:
         print(f"[0-3/5] resume from supplied textured mesh: {textured}", flush=True)
 
     assert textured is not None
-    print(f"[4/5] colour bake and generic orientation", flush=True)
-    convert_via_lego_python(
-        textured,
-        ply_path,
-        orient=args.orient,
-        colour=args.colour,
-        lego_palette=args.lego_palette,
-        colour_coherence=args.colour_coherence == "on",
-        refine=args.refine,
-    )
+    if args.lego_input is not None:
+        print(f"[4/5] use approved AI-edited LEGO input: {ply_path}", flush=True)
+    else:
+        print(f"[4/5] colour bake and generic orientation", flush=True)
+        convert_via_lego_python(
+            textured, ply_path, orient=args.orient, colour=args.colour,
+            lego_palette=args.lego_palette,
+            colour_coherence=args.colour_coherence == "on", refine=args.refine,
+        )
 
     if not args.build_lego or args.skip_lego:
         record_pipeline_state(run_dir, "oriented_review", textured=textured, lego_input=ply_path)

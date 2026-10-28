@@ -2,5 +2,11 @@
   "UNITEX_HOST": "user@your-gpu-host",
   "UNITEX_SSH_KEY": "C:/Users/YOUR_USER/.ssh/id_ed25519_unitex",
   "UNITEX_REMOTE_ROOT": "/data/unitex-work",
-  "UNITEX_GPU": 1
+  "UNITEX_GPU": 1,
+  "PROXE_ROOT": "/data/your-user/3D/third_party/Prox-E",
+  "PROXE_ENV_SCRIPT": "/data/your-user/3D/third_party/Prox-E/scripts/proxe_env.sh",
+  "PROXE_RELAY_CONFIG": "/data/your-user/3D/third_party/Prox-E/config/proxe_relay.env",
+  "PROXE_GPU": 1,
+  "LDRAW_DATA_HOME": "/home/your-user/.local/share",
+  "LDRAW_CACHE_HOME": "/home/your-user/.cache"
 }

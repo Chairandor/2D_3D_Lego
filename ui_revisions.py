@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import re
 import secrets
 import threading
@@ -58,7 +59,7 @@ def _state_file_lock(path: Path):
                 handle.write(b"\0")
                 handle.flush()
             handle.seek(0)
-            if os.name == "nt":
+            if os.name == "nt" and sys.platform == "win32":
                 import msvcrt
 
                 msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)

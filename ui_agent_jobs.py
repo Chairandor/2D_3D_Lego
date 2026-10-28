@@ -20,6 +20,7 @@ from pathlib import Path
 from PIL import Image, ImageChops
 
 import ui_revisions
+import proxe_integration as proxe
 
 
 CHAT_TOOLS = [
@@ -285,14 +286,14 @@ class AgentJobManager:
             self._set(ident, state="error", summary=str(exc))
 
     def _run_lego(self, ident: str, run_dir: Path, args: dict[str, object]) -> None:
-        python = self.lego_cli.with_name("python.exe")
+        python = self.lego_cli.with_name("python.exe" if os.name == "nt" else "python")
         if not python.is_file():
             raise RuntimeError("本机未找到 Legolization 虚拟环境")
         skill = str(args["skill"])
         quality = str(args.get("quality", "fast"))
         job_dir = run_dir / "ui_assistant" / "jobs" / ident
         job_dir.mkdir(parents=True, exist_ok=False)
-        mesh = self._selected_path(run_dir, "oriented/lego_input.ply")
+        mesh = proxe.selected_lego_input(run_dir) or self._selected_path(run_dir, "oriented/lego_input.ply")
         # The uv-generated Windows entry-point trampoline can fail after the
         # checkout is moved. Running the editable package via its venv Python
         # avoids that wrapper and does not modify the upstream repository.
