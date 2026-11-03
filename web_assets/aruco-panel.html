@@ -1,0 +1,39 @@
+<style>
+#arucoWorkflow[hidden]{display:none}.ar-fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}.ar-views{display:grid;grid-template-columns:1fr 1fr;gap:12px}.ar-card{border:1px solid var(--line);border-radius:13px;overflow:hidden;background:#f1efe7}.ar-card-heading{padding:11px 12px;border-bottom:1px solid var(--line);background:var(--panel);font-size:13px;font-weight:750;display:flex;justify-content:space-between;align-items:center}.ar-card-heading button{padding:4px 8px;font-size:11px}.ar-viewport{height:350px;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden}.ar-viewport .model-preview{height:100%;width:100%;background:transparent;padding:0}.ar-placeholder{padding:24px;text-align:center;color:var(--muted);font-size:13px;line-height:1.7}.ar-viewport img{width:100%;height:100%;object-fit:contain;background:#20231f}.ar-viewport img[hidden]{display:none}.ar-filename{overflow-wrap:anywhere;margin:8px 0}.ar-state-row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px}.ar-state-row h2{margin:0}.ar-statistics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}.ar-stat{border:1px solid var(--line);border-radius:10px;background:#f3f0e7;padding:11px;font-size:12px;color:var(--muted)}.ar-stat b{display:block;color:var(--ink);font-size:19px;margin-top:5px}.ar-stat.success{background:#e6efe2}.ar-stat.success b{color:var(--green)}.ar-downloads{display:flex;gap:14px;flex-wrap:wrap;margin:12px 0;font-size:12px}.ar-downloads a{color:var(--blue)}.ar-steps{grid-template-columns:repeat(3,1fr)}.ar-calibration{padding:10px 12px;border:1px solid #e2c56c;border-radius:10px;background:#fff1c7;color:#715300;font-size:12px;line-height:1.6;margin-top:12px}.ar-card-footer{padding:8px 12px;border-top:1px solid var(--line);font-size:11px;color:var(--muted)}.ar-path{font-size:11px;overflow-wrap:anywhere;color:var(--muted);margin-top:8px}.ar-toolbar{margin-top:14px}.ar-toolbar button{font-size:12px;padding:7px 10px}
+@media(max-width:1150px){.ar-views{grid-template-columns:1fr}.ar-viewport{height:320px}}@media(max-width:900px){.ar-views{grid-template-columns:1fr 1fr}}@media(max-width:600px){.ar-views,.ar-fields{grid-template-columns:1fr}.ar-viewport{height:290px}.ar-statistics{gap:5px}.ar-stat{padding:8px}.mode-switch{flex-wrap:wrap}}
+</style>
+<div id="arucoWorkflow" class="grid" hidden>
+  <section class="panel">
+    <h2>LDraw 模型与 AR 设置</h2>
+    <label for="arExamples">示例模型</label>
+    <div class="fileline"><select id="arExamples" aria-label="示例模型"></select><button id="arLoadExample" type="button">载入示例</button></div>
+    <label>自己的乐高模型</label>
+    <button id="arChoose" type="button">选择 LDR / MPD 文件</button>
+    <input id="arModelFile" type="file" accept=".ldr,.mpd" hidden>
+    <p id="arModelName" class="hint ar-filename">尚未选择模型</p>
+    <p class="hint">选择后先显示可旋转模型，点击“启动摄像头 AR”叠加到打印码上。含多个子模型时建议导出为 MPD。</p>
+    <div class="ar-fields">
+      <div><label for="arCamera">摄像头编号</label><input id="arCamera" type="number" min="0" max="20" step="1" value="0"></div>
+      <div><label for="arMarkerId">标记 ID</label><input id="arMarkerId" type="number" min="0" max="49" step="1" value="0"></div>
+      <div><label for="arMarkerSize">黑色方形边长 / 厘米</label><input id="arMarkerSize" type="number" min="0.1" max="200" step="0.1" value="6"></div>
+      <div><label for="arFitWidth">模型显示宽度 / 厘米</label><input id="arFitWidth" type="number" min="0.1" max="200" step="0.1" value="9"></div>
+    </div>
+    <p class="hint">标记字典：4×4 / 50。边长量黑色正方形外边缘，不包含白边；模型宽度是预览比例。</p>
+    <div class="actions"><button id="arStart" type="button" class="primary" disabled>启动摄像头 AR</button><button id="arStop" type="button" class="danger" disabled>停止当前任务</button></div>
+    <p class="hint">切换模型前先停止相机。切换页面标签会保留当前相机任务，点击停止即可释放设备。</p>
+    <div class="ar-calibration">当前使用估计相机内参。可用于识别和展示，精确比例与对齐需要实测标记尺寸及相机标定。</div>
+  </section>
+  <section class="panel">
+    <div class="ar-state-row"><h2>ArUco 乐高预览</h2><span id="arBadge" class="badge" role="status">就绪</span></div>
+    <div class="steps ar-steps"><div id="arStepModel" class="step wait">选择模型</div><div id="arStepCamera" class="step">打开摄像头</div><div id="arStepMarker" class="step">识别并叠加</div></div>
+    <div id="arNotice" class="notices" aria-live="polite"></div>
+    <div class="ar-views">
+      <div class="ar-card"><div class="ar-card-heading"><span>模型预览</span><button id="arResetView" type="button">重置视角</button></div><div id="arModelView" class="ar-viewport"><div class="ar-placeholder">载入示例，或选择自己的 LDraw 文件</div></div><div class="ar-card-footer">拖动旋转 · 滚轮缩放</div></div>
+      <div class="ar-card"><div class="ar-card-heading"><span>实时摄像头 AR</span><span id="arCameraLabel" class="hint">尚未启动</span></div><div class="ar-viewport"><div id="arVideoPlaceholder" class="ar-placeholder">启动摄像头后，将打印码完整放在画面内</div><img id="arVideo" alt="摄像头与虚拟乐高叠加画面" hidden></div><div class="ar-card-footer">画面仅在本机工作台显示</div></div>
+    </div>
+    <div class="ar-statistics"><div class="ar-stat">模型三角面<b id="arTriangles">—</b></div><div class="ar-stat">颜色数量<b id="arColors">—</b></div><div id="arRenderedStat" class="ar-stat">成功叠加帧数<b id="arRendered">0</b></div></div>
+    <p id="arStatusText" class="hint" role="status">选择文件后即可查看模型</p>
+    <div class="ar-downloads"><a id="arDownloadModel" hidden>下载原模型</a><a id="arDownloadPreview" hidden>下载预览 GLB</a><a id="arSnapshot" target="_blank" rel="noopener" hidden>查看首张成功画面</a></div>
+    <details><summary class="hint">查看运行日志</summary><pre id="arLog" class="log three-log">等待任务……</pre><div id="arSourcePath" class="ar-path"></div></details>
+  </section>
+</div>

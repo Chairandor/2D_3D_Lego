@@ -16,6 +16,8 @@
 
 ## 当前能力
 
+- 新增 **3D 文件 → LEGO** 标签，与图片模式保持相同配色和布局：Bunny STL 直接求解、Rhino 单色点云重建后求解、Tiko 彩色点云重建并导出 UV 贴图 OBJ 后求解。支持文件上传、原始/中间/LEGO 预览、步骤播放、下载和历史恢复；求解器沿用 legolization。需要相邻 LEGOLIZER 核心目录，或配置 `LEGOLIZER_ROOT` 和 `PROCESSING3D_PYTHON`。实现与真实验收见父项目 `docs/three-file-pipelines.md`；默认 Tiko 结果当前未通过稳定与装配审计。
+
 - 有效透明底输入跳过重新抠图；实底图使用 Florence-2 定位与 SAM 2 候选掩膜。
 - Hunyuan 生成无色几何，UniTEX 负责六视图生成和最终贴图；六视图完成并不代表贴图完成。
 - 支持两种部署方式：Windows 本机配合远端 UniTEX；或在 Linux / A800 上完成全部阶段，UniTEX 直接本机调用，无需 SSH 回连。
@@ -33,6 +35,25 @@
 3D 预览使用仓库内置的 Three.js 文件，无需访问外部 CDN；浏览器需支持 WebGL。`git clone` 后不会自动获得 LDraw 零件库。LEGO MPD 网页预览需要将完整零件库放在项目根目录的 `LDrawLibrary/ldraw/`，其中应有 `parts/`、`p/` 和 `LDConfig.ldr`。仅运行 Legolization 的 `parts sync` **不会自动放到这个路径**；按 [部署说明](docs/SETUP.md) 再复制或手工解压到位。缺库时普通 MPD 构建及下载链接仍可使用，但网页不会显示 LEGO 旋转预览。
 
 ## 开始使用
+
+### 本机 ArUco / LDraw 预览
+
+ArUco 页面已经合并进 `pipeline_ui.py`，与图片、3D 文件流程共用顶部标签、米白/黄色配色、左右卡片和任务状态。在主页面点击 **ArUco 预览**，或运行：
+
+```powershell
+.\start_aruco_ui.ps1
+# 已运行工作台时直接打开： http://127.0.0.1:7865/?mode=ar
+```
+
+选择 `chicken.ldr` / `jackjack失败版.ldr` 示例，或点击“选择 LDR / MPD 文件”。模型加载后可拖动旋转、滚轮缩放，支持重置视角和下载原模型/预览 GLB；点击“启动摄像头 AR”，右侧直接显示实时画面。可设置相机编号、标记 ID、黑色方形边长和模型显示宽度，尺寸输入单位均为厘米。切换模型前先停止任务，停止后释放相机；切换标签保持已有任务，刷新页面恢复当前模型和相机状态，不重复启动。
+
+底层复用相邻 `LEGOLIZER/aruco_lego/` 的 LDraw 读取与 AR 算法、其中的独立 `.venv` 和本机已有零件库；不在网页服务环境混装 OpenCV，也不自动下载零件库。不同部署路径可在 `config.local.json` 或环境变量中设置 `ARUCO_ROOT`、`ARUCO_PYTHON`、`ARUCO_STUDIO_COLORS`。最后一项为 Studio 的 `StudioColorDefinition.txt`，仅用于补充官方库没有的颜色；Windows 默认从 Studio 开始菜单快捷方式查找。
+
+上传文件分别保存到 `ui_uploads/aruco/` 的独立目录，不覆盖源文件；生成的 GLB、源文件哈希、模型信息与每次相机日志位于 `runs/aruco/`。相机画面通过本机 HTTP 服务显示，首次成功叠加另存 `first_ar_frame.png`，不会上传至外部服务。项目外的模型通过选择文件导入；含外部子模型引用时应导出为自包含 MPD，否则缺失引用会明确报错。
+
+默认字典为 `DICT_4X4_50`、ID 0、码边长 6 cm、显示宽度 9 cm。A4 默认打印不等于黑边长 6 cm；请测量实际黑色方形，白边不计入。当前网页 AR 使用估计相机内参，显示预览不等于真实比例、精确标定或现实深度遮挡。
+
+2026-11-01 验证：两个真实 LDraw 模型的网页 WebGL、原生文件选择、Studio 颜色、参数校验、相机实帧显示、停止、刷新、三个标签切换和 390 px 布局均通过。脚本为根项目 `examples/aruco_ui_smoke.mjs`；证据在根项目 `artifacts/aruco_ui_1793524174082/`。此次网页验收验证相机画面和启停；打印码小鸡叠加的实机结果见相邻 `aruco_lego/README.md`。
 
 Linux / A800 部署与现有环境复用见 [Linux 部署说明](docs/SETUP_LINUX.md)，使用 `bash pipeline_ui.sh --port 7865` 启动。下面是原有 Windows 方式。
 
@@ -60,6 +81,7 @@ Linux / A800 部署与现有环境复用见 [Linux 部署说明](docs/SETUP_LINU
 | `pipeline_2d_to_lego.py` | 全流程编排、本机 / SSH 着色接入、朝向校正、颜色转换 |
 | `pipeline_ui.sh` / `project_config.py` | Linux 启动、跨平台环境路径与任务进程组管理 |
 | `pipeline_ui.py` | 本地网页 UI、任务状态、产物列表、停止和警告 |
+| `ui_aruco.py` / `aruco_worker.py` / `web_assets/aruco-panel.*` | 合并的 LDraw 模型选择、几何预览、独立 AR 相机任务与网页画面 |
 | `ui_assistant.py` / `ui_agent_jobs.py` / `ui_revisions.py` | 阶段助手、后台操作、候选版本与分支状态 |
 | `ui_run_state.py` | 每个模型目录的当前分支、卡片与进度持久化 |
 | `ui_six_view.py` | 六视图原始蒙版冻结与像素保护 |

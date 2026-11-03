@@ -9,5 +9,8 @@
   "PROXE_RELAY_CONFIG": "/data/your-user/3D/third_party/Prox-E/config/proxe_relay.env",
   "PROXE_GPU": 1,
   "LDRAW_DATA_HOME": "/home/your-user/.local/share",
-  "LDRAW_CACHE_HOME": "/home/your-user/.cache"
+  "LDRAW_CACHE_HOME": "/home/your-user/.cache",
+  "LEGOLIZER_ROOT": "../",
+  "PROCESSING3D_PYTHON": "C:/path/to/legolizer/python.exe",
+  "LDRAW_LIBRARY": "C:/path/to/ldraw"
 }

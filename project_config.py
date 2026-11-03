@@ -59,6 +59,12 @@ def load_project_config(root: Path) -> None:
         "UNITEX_EXECUTION",
         "LEGO_PYTHON",
         "LEGO_CLI",
+        "ARUCO_ROOT",
+        "ARUCO_PYTHON",
+        "ARUCO_STUDIO_COLORS",
+        "LEGOLIZER_ROOT",
+        "PROCESSING3D_PYTHON",
+        "LDRAW_LIBRARY",
     }
     for key, value in values.items():
         if key not in allowed:

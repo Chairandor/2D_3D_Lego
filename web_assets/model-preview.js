@@ -229,6 +229,12 @@ window.mountModelPreviews = () => {
   }
 };
 
+window.unmountModelPreview = (element) => {
+  observer.unobserve(element);
+  disposeView(element);
+  observed.delete(element);
+};
+
 window.disposeModelPreviews = () => {
   for (const element of observed) {
     observer.unobserve(element);

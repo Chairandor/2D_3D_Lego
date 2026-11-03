@@ -35,6 +35,8 @@ from project_config import load_project_config, venv_executable, terminate_proce
 
 ROOT = Path(__file__).resolve().parent
 load_project_config(ROOT)
+import ui_3d_jobs
+import ui_aruco
 PIPELINE = ROOT / "pipeline_2d_to_lego.py"
 LEGO_ROOT = ROOT / "legolization"
 LEGO_PYTHON = Path(os.environ.get("LEGO_PYTHON", str(venv_executable(LEGO_ROOT / ".venv", "python"))))
@@ -44,8 +46,10 @@ RECOMMENDATION_MAX_STUDS = 128
 DEFAULT_IMAGE = ROOT / "models" / "chicken" / "7ken.png"
 UPLOADS = ROOT / "ui_uploads"
 STATIC_ROOT = ROOT / "web_assets"
-LDRAW_ROOT = ROOT / "LDrawLibrary" / "ldraw"
+LDRAW_ROOT = ui_3d_jobs.find_ldraw(ROOT)
 INSTRUCTIONS = ui_instructions.InstructionService(ROOT)
+THREE_D = ui_3d_jobs.ThreeDController(ROOT)
+ARUCO = ui_aruco.ArucoService(ROOT)
 
 
 def safe_name(name: str) -> str:
@@ -1433,9 +1437,23 @@ function openRevisionUpload(relative){revisionRelative=relative;const f=$('revis
 async function uploadRevision(input){const f=input.files[0];if(!f)return;try{const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]);r.onerror=reject;r.readAsDataURL(f)});await api('/api/revision/upload',{run_dir:currentRunDir,relative:revisionRelative,name:f.name,data});artifactSignature=null;refresh()}catch(e){alert(e.message)}}
 $('artifacts').addEventListener('pointerdown',e=>{pointerStart={x:e.clientX,y:e.clientY}});
 $('artifacts').addEventListener('click',async e=>{const aiReset=e.target.closest('[data-ai-reset]');if(aiReset){await reset3DResult();return}const upload=e.target.closest('[data-upload]');if(upload){openRevisionUpload(upload.dataset.upload);return}const confirm=e.target.closest('[data-confirm]');if(confirm){const choice=pendingChoice;if(!choice)return;if(confirm.dataset.confirm==='no'){pendingChoice=null;artifactSignature=null;refresh();return}try{if(choice.ai_edit){await api(choice.version==='candidate'?'/api/ai-edit/accept':'/api/ai-edit/reset',{})}else{await api('/api/revision/choose',{run_dir:currentRunDir,relative:choice.relative,choice:choice.version})}pendingChoice=null;artifactSignature=null;refresh()}catch(err){alert(err.message)}return}if(e.target.closest('a,button'))return;const card=e.target.closest('.choice-card');if(!card)return;if(pointerStart&&Math.hypot(e.clientX-pointerStart.x,e.clientY-pointerStart.y)>6)return;pendingChoice={relative:card.dataset.relative,version:card.dataset.version,ai_edit:card.dataset.aiEdit==='1'};artifactSignature=null;refresh()});
-async function refresh(){try{const r=await fetch('/api/status');const d=await r.json();currentRunDir=d.run_dir||'';const edit=d.ai_editor||{};$("resume3D").hidden=!edit.can_resume;$("stop3D").hidden=!edit.running;if(!formInitialized){if(d.display_image)$('imagePath').value=d.display_image;if(d.display_output_dir)$('outputDir').value=d.display_output_dir;if(d.display_image&&d.display_image.includes('/ui_uploads/'))showInputPreview('/file?path='+encodeURIComponent(d.display_image),'已上传的输入图片');formInitialized=true}$('badge').textContent=(edit.running?edit.message:d.message)+((d.running||edit.running)?' · '+(edit.running?edit.elapsed:d.elapsed)+'s':'');$('runButton').disabled=d.running||edit.running;showRecommendation(d.lego_recommendation);const notices=d.notices||[];$('notices').innerHTML=notices.map(n=>`<div class="notice ${n.level==='error'?'error':'warning'}">${esc(n.text)}</div>`).join('');$('log').textContent=(edit.running||edit.logs?edit.logs:d.logs)||'等待任务……';$('log').scrollTop=$('log').scrollHeight;$('runDir').textContent=d.display_output_dir||'尚未运行';$('elapsed').textContent=d.elapsed+' 秒';renderSteps(d.pipeline_state||{},d.artifacts||[],edit);renderArtifacts(d.artifact_groups||[]);polling=!!(d.running||edit.running);if(polling)setTimeout(refresh,1200)}catch(e){polling=false;$('badge').textContent='连接失败'}}
+async function refresh(){if(window.uiMode&&window.uiMode!=='image')return;try{const r=await fetch('/api/status');const d=await r.json();currentRunDir=d.run_dir||'';const edit=d.ai_editor||{};$("resume3D").hidden=!edit.can_resume;$("stop3D").hidden=!edit.running;if(!formInitialized){if(d.display_image)$('imagePath').value=d.display_image;if(d.display_output_dir)$('outputDir').value=d.display_output_dir;if(d.display_image&&d.display_image.includes('/ui_uploads/'))showInputPreview('/file?path='+encodeURIComponent(d.display_image),'已上传的输入图片');formInitialized=true}$('badge').textContent=(edit.running?edit.message:d.message)+((d.running||edit.running)?' · '+(edit.running?edit.elapsed:d.elapsed)+'s':'');$('runButton').disabled=d.running||edit.running;showRecommendation(d.lego_recommendation);const notices=d.notices||[];$('notices').innerHTML=notices.map(n=>`<div class="notice ${n.level==='error'?'error':'warning'}">${esc(n.text)}</div>`).join('');$('log').textContent=(edit.running||edit.logs?edit.logs:d.logs)||'等待任务……';$('log').scrollTop=$('log').scrollHeight;$('runDir').textContent=d.display_output_dir||'尚未运行';$('elapsed').textContent=d.elapsed+' 秒';renderSteps(d.pipeline_state||{},d.artifacts||[],edit);renderArtifacts(d.artifact_groups||[]);polling=!!(d.running||edit.running);if(polling)setTimeout(refresh,1200)}catch(e){polling=false;$('badge').textContent='连接失败'}}
 loadExistingRunOptions();refresh();setInterval(()=>{if(!polling)refresh()},5000);
 </script></body></html>"""
+
+
+# 三维面板复用同一工作台的 CSS、Three.js、本地文件服务与 LEGO 页面。
+THREE_D_HTML = (STATIC_ROOT / "three-pipeline.html").read_text(encoding="utf-8")
+HTML = HTML.replace('<body>', '<body data-default-mode="__DEFAULT_MODE__">', 1)
+HTML = HTML.replace('<h1>2D → Hunyuan → UniTEX → LEGO</h1>', '<h1>2D / 3D → LEGO</h1>', 1)
+HTML = HTML.replace('<div class="grid"><section class="panel"><h2>输入与运行设置</h2>',
+    '<div class="mode-switch"><button id="mode2dButton" type="button">图片 → 3D → LEGO</button><button id="mode3dButton" type="button">3D 文件 → LEGO</button></div>'
+    + THREE_D_HTML + '<div id="imageWorkflow" class="grid"><section class="panel"><h2>输入与运行设置</h2>', 1)
+HTML = HTML.replace('</body></html>', '<script type="module" src="/static/three-pipeline.js"></script></body></html>', 1)
+HTML = HTML.replace('<button id="mode3dButton" type="button">3D 文件 → LEGO</button>',
+                    '<button id="mode3dButton" type="button">3D 文件 → LEGO</button><button id="modeArButton" type="button">ArUco 预览</button>', 1)
+HTML = HTML.replace('<div id="imageWorkflow"', (STATIC_ROOT / 'aruco-panel.html').read_text(encoding='utf-8') + '<div id="imageWorkflow"', 1)
+HTML = HTML.replace('</body></html>', '<script type="module" src="/static/aruco-panel.js"></script></body></html>', 1)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1454,14 +1472,31 @@ class Handler(BaseHTTPRequestHandler):
 
     def read_json(self) -> dict[str, object]:
         length = int(self.headers.get("Content-Length", "0"))
-        if length > 170 * 1024 * 1024:
-            raise ValueError("上传内容超过 32 MB")
+        if length > 172 * 1024 * 1024:  # 包含 128 MiB 文件的 Base64 与 JSON 开销
+            raise ValueError("请求体超过 172 MiB；几何文件限 128 MiB")
         return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/":
-            body = HTML.replace("__DEFAULT_IMAGE__", html.escape(str(DEFAULT_IMAGE), quote=True)).encode("utf-8")
+        if parsed.path.startswith('/api/ar/'):
+            self.serve_aruco(parsed)
+        elif parsed.path.startswith("/api/3d/"):
+            query = urllib.parse.parse_qs(parsed.query)
+            flow = query.get("flow", ["stl"])[0]
+            try:
+                if parsed.path == "/api/3d/bootstrap":
+                    self.send_json(THREE_D.bootstrap())
+                elif parsed.path == "/api/3d/status":
+                    self.send_json(THREE_D.status(flow))
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+            except (ValueError, OSError) as exc:
+                self.send_json({"error": str(exc)}, status=400)
+        elif parsed.path == "/":
+            mode = os.environ.get('PIPELINE_UI_DEFAULT_MODE', 'image')
+            if mode not in {'image', '3d', 'ar'}:
+                mode = 'image'
+            body = HTML.replace("__DEFAULT_IMAGE__", html.escape(str(DEFAULT_IMAGE), quote=True)).replace("__DEFAULT_MODE__", mode).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -1571,7 +1606,43 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         try:
             data = self.read_json()
-            if self.path == "/api/start":
+            if THREE_D.is_running() and self.path in {"/api/start", "/api/ai-edit/start", "/api/assistant/chat"}:
+                raise RuntimeError("3D 文件流水线正在运行，请先等待或停止")
+            if self.path.startswith('/api/ar/'):
+                origin = self.headers.get('Origin')
+                if origin and urllib.parse.urlparse(origin).netloc != self.headers.get('Host'):
+                    raise ValueError('AR 控制仅允许来自当前本机页面的请求。')
+                if self.path == '/api/ar/upload':
+                    raw = base64.b64decode(str(data.get('data', '')), validate=True)
+                    self.send_json(ARUCO.upload(str(data.get('name', '')), raw))
+                elif self.path == '/api/ar/select':
+                    self.send_json(ARUCO.select(str(data.get('path', ''))))
+                elif self.path == '/api/ar/start':
+                    self.send_json(ARUCO.start(data))
+                elif self.path == '/api/ar/stop':
+                    ARUCO.stop()
+                    self.send_json(ARUCO.status())
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+            elif self.path.startswith("/api/3d/"):
+                if self.path == "/api/3d/stop":
+                    THREE_D.stop()
+                    self.send_json({"ok": True})
+                else:
+                    if CONTROLLER.is_running() or AI_EDITOR.is_running():
+                        raise RuntimeError("其他流水线正在运行，请先等待或停止")
+                    if self.path == "/api/3d/start":
+                        self.send_json(THREE_D.start(data))
+                    elif self.path == "/api/3d/upload":
+                        raw = base64.b64decode(str(data.get("data", "")), validate=True)
+                        self.send_json({"path": THREE_D.upload(str(data.get("name", "")), raw, str(data.get("flow", "")))})
+                    elif self.path == "/api/3d/load":
+                        self.send_json(THREE_D.load(str(data.get("flow", "")), str(data.get("output", ""))))
+                    elif self.path == "/api/3d/demo":
+                        self.send_json(THREE_D.load_demo(str(data.get("flow", ""))))
+                    else:
+                        self.send_error(HTTPStatus.NOT_FOUND)
+            elif self.path == "/api/start":
                 if AI_EDITOR.is_running():
                     raise RuntimeError("3D 模型编辑正在运行")
                 CONTROLLER.start(data)
@@ -1729,6 +1800,35 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             self.send_json({"error": f"服务器错误：{exc}"}, status=500)
 
+    def serve_aruco(self, parsed: urllib.parse.ParseResult) -> None:
+        """读取 AR 状态或本次任务产物，不暴露任意磁盘路径。"""
+        try:
+            if parsed.path == '/api/ar/bootstrap':
+                self.send_json(ARUCO.bootstrap())
+            elif parsed.path == '/api/ar/status':
+                self.send_json(ARUCO.status())
+            elif parsed.path == '/api/ar/file':
+                kind = urllib.parse.parse_qs(parsed.query).get('kind', [''])[0]
+                path = ARUCO.asset(kind)
+                if path is None:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                body = path.read_bytes()
+                content_type = {'preview': 'model/gltf-binary', 'model': 'text/plain; charset=utf-8',
+                                'frame': 'image/jpeg', 'snapshot': 'image/png'}[kind]
+                self.send_response(200)
+                self.send_header('Content-Type', content_type)
+                self.send_header('Content-Length', str(len(body)))
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('Cross-Origin-Resource-Policy', 'same-origin')
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND)
+        except (ValueError, OSError) as exc:
+            if not isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+                self.send_json({'error': str(exc)}, status=400)
+
     @staticmethod
     def dispatch_assistant(run_dir: Path | None, tool: str, args: dict[str, object]) -> dict[str, object]:
         if run_dir is None:
@@ -1743,8 +1843,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=7865)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument('--mode', choices=['image', '3d', 'ar'], help='初始工作台标签')
     parser.add_argument("--run-dir", type=Path, help="载入已有运行目录，仅用于显示产物")
     args = parser.parse_args()
+    if args.mode:
+        os.environ['PIPELINE_UI_DEFAULT_MODE'] = args.mode
     if args.run_dir is not None:
         run_dir = args.run_dir.resolve()
         if not run_dir.is_dir() or not within_root(run_dir):
@@ -1754,6 +1857,8 @@ def main() -> None:
         CONTROLLER.load_run(CONTROLLER.run_dir)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     url = f"http://127.0.0.1:{args.port}"
+    if args.mode:
+        url += '?mode=' + args.mode
     print(f"Pipeline UI: {url}", flush=True)
     print("Press Ctrl+C to stop the local server.", flush=True)
     if not args.no_browser:
@@ -1763,6 +1868,8 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        THREE_D.stop()
+        ARUCO.stop()
         server.server_close()
 
 
