@@ -1,0 +1,12 @@
+freetype-py==2.5.1
+ImageIO==2.38.0
+networkx==3.4.2
+numpy==1.26.4
+opencv-contrib-python==4.10.0.84
+pillow==12.3.0
+pyglet==1.5.31
+PyOpenGL==3.1.0
+pyrender==0.1.45
+scipy==1.15.3
+six==1.17.0
+trimesh==4.12.2

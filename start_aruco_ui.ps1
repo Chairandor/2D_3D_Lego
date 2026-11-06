@@ -15,7 +15,12 @@ if ($null -ne $existing -and $existing.PSObject.Properties.Name -contains 'avail
 }
 if (-not $PythonExe) {
     if ($env:ARUCO_PYTHON) { $PythonExe = $env:ARUCO_PYTHON }
-    else { $PythonExe = Join-Path (Split-Path -Parent $projectRoot) 'aruco_lego\.venv\Scripts\python.exe' }
+    else {
+        $PythonExe = Join-Path $projectRoot 'aruco_lego\.venv\Scripts\python.exe'
+        if (-not (Test-Path -LiteralPath $PythonExe)) {
+            $PythonExe = Join-Path (Split-Path -Parent $projectRoot) 'aruco_lego\.venv\Scripts\python.exe'
+        }
+    }
 }
 if (-not (Test-Path -LiteralPath $PythonExe)) {
     throw '未找到本机 AR Python 环境。用 -PythonExe 指定可运行工作台的 Python，或先配置 aruco_lego/.venv。'

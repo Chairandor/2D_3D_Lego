@@ -1,0 +1,6 @@
+# Recommended for Python 3.10/3.11; NumPy 1.x avoids old pyrender's NumPy 2 API break.
+numpy>=1.24,<2
+opencv-contrib-python==4.10.0.84
+trimesh>=4,<5
+pyrender==0.1.45
+pyglet>=1.5,<2

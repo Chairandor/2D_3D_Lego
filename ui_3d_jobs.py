@@ -14,12 +14,11 @@ import threading
 import time
 import urllib.parse
 
-from project_config import terminate_process_tree
+from project_config import resolve_core_root, terminate_process_tree
 
 
 ROOT = Path(__file__).resolve().parent
-_core_path = Path(os.environ.get("LEGOLIZER_ROOT", str(ROOT.parent)))
-CORE_ROOT = (_core_path if _core_path.is_absolute() else ROOT / _core_path).resolve()
+CORE_ROOT = resolve_core_root(ROOT)
 if str(CORE_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(CORE_ROOT / "src"))
 

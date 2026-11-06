@@ -16,7 +16,7 @@
 
 ## 当前能力
 
-- 新增 **3D 文件 → LEGO** 标签，与图片模式保持相同配色和布局：Bunny STL 直接求解、Rhino 单色点云重建后求解、Tiko 彩色点云重建并导出 UV 贴图 OBJ 后求解。支持文件上传、原始/中间/LEGO 预览、步骤播放、下载和历史恢复；求解器沿用 legolization。需要相邻 LEGOLIZER 核心目录，或配置 `LEGOLIZER_ROOT` 和 `PROCESSING3D_PYTHON`。实现与真实验收见父项目 `docs/three-file-pipelines.md`；默认 Tiko 结果当前未通过稳定与装配审计。
+- 新增 **3D 文件 → LEGO** 标签，与图片模式保持相同配色和布局：Bunny STL 直接求解、Rhino 单色点云重建后求解、Tiko 彩色点云重建并导出 UV 贴图 OBJ 后求解。支持文件上传、原始/中间/LEGO 预览、步骤播放、下载和历史恢复；求解器沿用 legolization。三维核心源码已包含在 `src/legolizer/`，安装和配置见 [3D / ArUco 部署](docs/SETUP_3D_AR.md)。原默认示例数据与历史产物不随源码分发；默认 Tiko 历史结果未通过稳定与装配审计。
 
 - 有效透明底输入跳过重新抠图；实底图使用 Florence-2 定位与 SAM 2 候选掩膜。
 - Hunyuan 生成无色几何，UniTEX 负责六视图生成和最终贴图；六视图完成并不代表贴图完成。
@@ -47,7 +47,7 @@ ArUco 页面已经合并进 `pipeline_ui.py`，与图片、3D 文件流程共用
 
 选择 `chicken.ldr` / `jackjack失败版.ldr` 示例，或点击“选择 LDR / MPD 文件”。模型加载后可拖动旋转、滚轮缩放，支持重置视角和下载原模型/预览 GLB；点击“启动摄像头 AR”，右侧直接显示实时画面。可设置相机编号、标记 ID、黑色方形边长和模型显示宽度，尺寸输入单位均为厘米。切换模型前先停止任务，停止后释放相机；切换标签保持已有任务，刷新页面恢复当前模型和相机状态，不重复启动。
 
-底层复用相邻 `LEGOLIZER/aruco_lego/` 的 LDraw 读取与 AR 算法、其中的独立 `.venv` 和本机已有零件库；不在网页服务环境混装 OpenCV，也不自动下载零件库。不同部署路径可在 `config.local.json` 或环境变量中设置 `ARUCO_ROOT`、`ARUCO_PYTHON`、`ARUCO_STUDIO_COLORS`。最后一项为 Studio 的 `StudioColorDefinition.txt`，仅用于补充官方库没有的颜色；Windows 默认从 Studio 开始菜单快捷方式查找。
+底层 LDraw 读取与 AR 算法已包含在 `aruco_lego/`，依赖使用独立 `.venv` 和本机已有零件库；安装和配置见 [3D / ArUco 部署](docs/SETUP_3D_AR.md)。已有相邻 `LEGOLIZER` 布局继续兼容。不在网页服务环境混装 OpenCV，也不自动下载零件库。不同部署路径可在 `config.local.json` 或环境变量中设置 `ARUCO_ROOT`、`ARUCO_PYTHON`、`ARUCO_STUDIO_COLORS`。最后一项为 Studio 的 `StudioColorDefinition.txt`，仅用于补充官方库没有的颜色；Windows 默认从 Studio 开始菜单快捷方式查找。
 
 上传文件分别保存到 `ui_uploads/aruco/` 的独立目录，不覆盖源文件；生成的 GLB、源文件哈希、模型信息与每次相机日志位于 `runs/aruco/`。相机画面通过本机 HTTP 服务显示，首次成功叠加另存 `first_ar_frame.png`，不会上传至外部服务。项目外的模型通过选择文件导入；含外部子模型引用时应导出为自包含 MPD，否则缺失引用会明确报错。
 

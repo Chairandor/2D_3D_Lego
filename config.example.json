@@ -10,7 +10,7 @@
   "PROXE_GPU": 1,
   "LDRAW_DATA_HOME": "/home/your-user/.local/share",
   "LDRAW_CACHE_HOME": "/home/your-user/.cache",
-  "LEGOLIZER_ROOT": "../",
+  "LEGOLIZER_ROOT": ".",
   "PROCESSING3D_PYTHON": "C:/path/to/legolizer/python.exe",
   "LDRAW_LIBRARY": "C:/path/to/ldraw"
 }

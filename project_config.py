@@ -7,6 +7,17 @@ import os
 from pathlib import Path
 
 
+def resolve_core_root(root: Path) -> Path:
+    """定位显式配置、已有相邻核心或仓库内附带的三维源码。"""
+    if value := os.environ.get("LEGOLIZER_ROOT"):
+        path = Path(value)
+        return (path if path.is_absolute() else root / path).resolve()
+    for candidate in (root.parent, root):
+        if (candidate / "src/legolizer").is_dir():
+            return candidate.resolve()
+    return root.parent.resolve()
+
+
 def venv_executable(env_dir: Path, name: str) -> Path:
     return env_dir / ("Scripts" if os.name == "nt" else "bin") / (name + ".exe" if os.name == "nt" else name)
 

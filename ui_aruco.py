@@ -13,7 +13,7 @@ import subprocess
 import threading
 import time
 
-from project_config import terminate_process_tree, venv_executable
+from project_config import resolve_core_root, terminate_process_tree, venv_executable
 from ui_3d_jobs import find_ldraw
 
 
@@ -42,7 +42,7 @@ class ArucoService:
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
-        self.core = Path(os.environ.get('LEGOLIZER_ROOT', self.root.parent)).resolve()
+        self.core = resolve_core_root(self.root)
         self.ar_root = Path(os.environ.get('ARUCO_ROOT', self.core / 'aruco_lego')).resolve()
         self.python = Path(os.environ.get('ARUCO_PYTHON', venv_executable(self.ar_root / '.venv', 'python')))
         self.lock = threading.RLock()

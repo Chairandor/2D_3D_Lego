@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LEGOLIZER · 转换工作台</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header class="topbar"><a class="brand" href="/"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M2 5h12v12H2zm16 0h12v12H18zM2 21h12v8H2zm16 0h12v8H18z" fill="currentColor"/></svg><strong>LEGOLIZER</strong><span>转换工作台</span></a><div class="topmeta"><span class="local-dot"></span>本地运行<span class="separator">/</span><span id="connection">正在连接</span><button id="historyBtn" class="subtle">运行记录</button></div></header>
+<main>
+<div class="pageheading"><div><div class="eyebrow">GEOMETRY TO BRICKS</div><h1>让每一步转换，看得见。</h1><p>从几何输入到 LEGO 装配，在同一个工作台里完成。</p></div><div class="backend-tag"><span class="local-dot"></span>LEGO 引擎 <b>legolization</b></div></div>
+<div id="notice" class="notice" role="status" hidden></div>
+<div class="workspace">
+<aside class="panel settings">
+<div class="section-title"><span class="number">01</span><h2>选择流程</h2></div>
+<label for="operation">转换路径</label><select id="operation"></select><p id="opNote" class="hint"></p>
+<div class="section-title divider"><span class="number">02</span><h2>输入文件</h2></div>
+<label for="inputPath">项目相对路径或完整路径</label><div class="fileline"><input id="inputPath" placeholder="选择模型或 RGB-D manifest"><button id="browseBtn" title="浏览项目文件">浏览</button></div>
+<div class="input-actions"><button id="uploadBtn" class="subtle">↑ 上传单文件</button><button id="previewInput" class="subtle">查看输入 ↗</button></div><input id="upload" type="file" hidden accept=".stl,.ply,.obj,.glb,.off,.pcd,.xyz,.xyzn,.xyzrgb,.pts,.npz,.ldr,.mpd,.tgz,.gz">
+<div class="samples"><span>快速选择</span><button data-source="datasets/others/bunny.stl">Bunny</button><button data-source="datasets/others/armadillo.stl">Armadillo</button><button data-source="datasets/others/knot.stl">Knot</button></div>
+<p class="hint">单文件上传上限 128 MiB。RGB-D 帧与 manifest 请一并放入项目目录。</p>
+<div class="section-title divider"><span class="number">03</span><h2>设置参数</h2><button id="resetOptions" class="text-btn">重置</button></div>
+<form id="params"></form>
+<div class="run-area"><p class="hint">每次运行单独保存到 <code>artifacts/ui_runs/</code></p><button id="runBtn" class="primary">开始转换 <span>→</span></button><button id="stopBtn" class="stop" disabled>停止当前任务</button></div>
+</aside>
+<section class="workarea">
+<div class="panel execution"><div class="execution-heading"><div><span class="eyebrow">PIPELINE</span><h2 id="runTitle">准备开始</h2></div><div id="status" class="badge">就绪</div></div><div id="stages" class="stages"></div><div class="runmeta"><span id="outputPath">配置左侧输入，然后开始转换</span><span id="elapsed">—</span></div></div>
+<div class="panel viewer-panel"><div class="viewer-heading"><div class="tabs" role="tablist"><button id="previewTab" class="active" role="tab" aria-selected="true">模型预览</button><button id="resultsTab" role="tab" aria-selected="false">产物与检查 <span id="artifactCount" class="count">0</span></button></div></div>
+<div id="previewPane"><div class="canvas-toolbar"><div id="previewName">选择输入或产物开始预览</div><div class="viewer-controls"><label for="previewAxis">预览上轴</label><select id="previewAxis"><option value="z">+Z</option><option value="y">+Y</option><option value="x">+X</option><option value="-z">−Z</option><option value="-y">−Y</option><option value="-x">−X</option></select><button id="resetView" class="subtle">复位视角</button></div></div>
+<div class="viewport"><canvas id="canvas" aria-label="模型交互预览，拖拽旋转，滚轮缩放"></canvas><div id="viewerMessage" class="viewer-message"><span class="wire-cube">◇</span><b>几何与积木，都在这里</b><span>选择一个 STL、PLY、NPZ 或 LDraw 文件</span></div><div class="canvas-legend"><span><i class="axis-x"></i>X</span><span><i class="axis-y"></i>Y</span><span><i class="axis-z"></i>Z</span></div><div class="canvas-help">拖拽旋转 · 滚轮缩放</div></div>
+<div id="stepControl" class="step-control" hidden><label for="stepSlider">装配步骤</label><input id="stepSlider" type="range" min="1" max="1" value="1"><span id="stepValue">1 / 1</span><button id="playSteps" class="subtle">播放</button></div>
+<div id="previewStats" class="metrics"></div><p id="previewNote" class="preview-note">预览仅用于检查几何和步骤；认证状态以原始报告为准。</p></div>
+<div id="resultsPane" class="results-pane" hidden><div id="checks"></div><div class="artifact-heading"><h3>本次运行产物</h3><span>预览、下载，或继续下一步</span></div><div id="artifacts" class="empty">转换后将在这里显示中间模型、BOM 和检查报告。</div></div>
+</div>
+<div class="panel log-panel"><div class="log-heading"><h2><span class="terminal-icon">›_</span>运行日志</h2><div><span id="logState">等待任务</span><label class="check"><input id="autoscroll" type="checkbox" checked>自动滚动</label></div></div><pre id="log" tabindex="0">任务尚未开始。参数和完整命令会随运行记录保存。</pre></div>
+<footer><span id="envInfo">读取环境信息……</span><span>工作区内执行 · 源文件保留</span></footer>
+</section>
+</div></main>
+<dialog id="browser"><div class="modal-heading"><h2>项目文件</h2><button id="closeBrowser" aria-label="关闭">×</button></div><div class="browser-tools"><button id="parentDir">↑ 上一级</button><span id="browsePath">/</span></div><input id="fileSearch" type="search" placeholder="筛选当前目录"><div id="fileList" class="file-list"></div></dialog>
+<dialog id="history"><div class="modal-heading"><h2>运行记录</h2><button id="closeHistory" aria-label="关闭">×</button></div><div id="historyList" class="file-list"></div></dialog>
+<script src="/app.js"></script>
+</body></html>
