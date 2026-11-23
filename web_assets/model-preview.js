@@ -102,6 +102,7 @@ function draw(view) {
   const deltaSeconds = view.lastFrameTime ? Math.min((now - view.lastFrameTime) / 1000, 0.1) : 0;
   view.lastFrameTime = now;
   view.controls.update(deltaSeconds);
+  if (view.rotationPivot && view.targetRotation) view.rotationPivot.quaternion.slerp(view.targetRotation, Math.min(1, deltaSeconds * 12));
   view.renderer.render(view.scene, view.camera);
 }
 
@@ -142,7 +143,7 @@ async function createView(element) {
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.enablePan = false;
-  controls.autoRotate = true;
+  controls.autoRotate = element.dataset.autoRotate !== 'false';
   controls.autoRotateSpeed = 2;
   const view = {
     element, scene, renderer, camera, controls,
@@ -163,7 +164,7 @@ async function createView(element) {
     clearTimeout(view.resumeTimer);
   });
   controls.addEventListener('end', () => {
-    view.resumeTimer = setTimeout(() => { controls.autoRotate = true; }, 3500);
+    view.resumeTimer = setTimeout(() => { controls.autoRotate = element.dataset.autoRotate !== 'false'; }, 3500);
   });
 
   try {
@@ -190,6 +191,7 @@ async function createView(element) {
     }
     view.model = model;
     scene.add(model);
+    if (element._arRotation) window.setModelPreviewRotation(element, element._arRotation);
     fitCamera(view);
     loading.remove();
     startView(view);
@@ -233,6 +235,30 @@ window.unmountModelPreview = (element) => {
   observer.unobserve(element);
   disposeView(element);
   observed.delete(element);
+};
+
+window.setModelPreviewRotation = (element, rotation) => {
+  if (!element || !Array.isArray(rotation) || rotation.length !== 3 || !rotation.every(row => Array.isArray(row) && row.length === 3 && row.every(Number.isFinite))) return;
+  element._arRotation = rotation;
+  const view = views.get(element);
+  if (!view?.model) return;
+  if (!view.rotationPivot) {
+    const center = new THREE.Box3().setFromObject(view.model).getCenter(new THREE.Vector3());
+    const pivot = new THREE.Group();
+    pivot.position.copy(center);
+    view.scene.remove(view.model);
+    view.model.position.sub(center);
+    pivot.add(view.model);
+    view.scene.add(pivot);
+    view.model = pivot;
+    view.rotationPivot = pivot;
+  }
+  const [a, b, c] = rotation;
+  const matrix = new THREE.Matrix4().set(a[0], a[1], a[2], 0, b[0], b[1], b[2], 0, c[0], c[1], c[2], 0, 0, 0, 0, 1);
+  const basis = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+  matrix.premultiply(basis).multiply(basis.clone().invert());
+  view.targetRotation = new THREE.Quaternion().setFromRotationMatrix(matrix);
+  element.dataset.gestureRotation = JSON.stringify(rotation);
 };
 
 window.disposeModelPreviews = () => {

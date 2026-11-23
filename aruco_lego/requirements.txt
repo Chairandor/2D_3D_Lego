@@ -4,3 +4,5 @@ opencv-contrib-python==4.10.0.84
 trimesh>=4,<5
 pyrender==0.1.45
 pyglet>=1.5,<2
+# Bundled Pose/Hands models, compatible with the existing NumPy 1.x AR stack.
+mediapipe==0.10.21

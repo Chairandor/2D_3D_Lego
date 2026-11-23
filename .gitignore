@@ -41,6 +41,7 @@ __pycache__/
 uv_cache/
 *.log
 logs/
+Log/
 runs/
 ui_uploads/
 handoff/

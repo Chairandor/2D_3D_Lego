@@ -21,7 +21,8 @@ def validate_camera_options(data: dict) -> dict:
     """校验界面的厘米参数，并转换为 AR 使用的米制参数。"""
     result = {}
     for name, low, high, default in [('camera', 0, 20, 0), ('marker_id', 0, 49, 0),
-                                     ('marker_size_cm', 0.1, 200, 6), ('fit_width_cm', 0.1, 200, 9)]:
+                                     ('marker_size_cm', 0.1, 200, 6), ('fit_width_cm', 0.1, 200, 9),
+                                     ('gesture_angle', 5, 90, 30)]:
         try:
             value = float(data.get(name, default))
         except (ValueError, TypeError) as exc:
@@ -34,6 +35,15 @@ def validate_camera_options(data: dict) -> dict:
             result[name] = int(value)
         else:
             result[name] = value
+    for name in ('gestures', 'show_skeleton'):
+        value = data.get(name, True)
+        if not isinstance(value, bool):
+            raise ValueError(f'{name} 必须是布尔值。')
+        result[name] = value
+    source = data.get('camera_source', 'gemini')
+    if source not in ('gemini', 'opencv'):
+        raise ValueError('相机来源必须为 gemini 或 opencv。')
+    result['camera_source'] = source
     return result
 
 
@@ -183,14 +193,32 @@ class ArucoService:
                 raise ValueError('源模型已变化，请重新载入后再启动摄像头。')
             live = self.preview_dir / ('live_' + secrets.token_hex(4))
             command = [str(self.ar_root / 'aruco_lego_ar.py'), '--model', str(self.model),
+                       '--camera-source', options['camera_source'],
                        '--camera', str(options['camera']), '--marker-id', str(options['marker_id']),
                        '--marker-size', str(options['marker_size_cm'] / 100),
                        '--fit-width', str(options['fit_width_cm'] / 100),
                        '--no-window', '--log-dir', str(live), '--frame-output', str(live / 'frame.jpg'),
-                       '--stop-file', str(live / 'stop.request'), *self._dependency_args()]
+                       '--stop-file', str(live / 'stop.request'),
+                       '--control-file', str(live / 'control.json'), *self._dependency_args()]
+            if options['gestures']:
+                command += ['--gestures', '--gesture-angle', str(options['gesture_angle'])]
+            if not options['show_skeleton']:
+                command += ['--no-skeleton']
             self._launch(command, 'running')
             self.options, self.live_dir = options, live
             self.message = '正在打开摄像头……'
+            return self.status()
+
+    def reset_rotation(self) -> dict:
+        """向当前相机任务发送显示朝向重置，不改动模型文件。"""
+        with self.lock:
+            if not self._busy() or self.live_dir is None or self.phase != 'running':
+                raise ValueError('请先启动摄像头，再恢复模型朝向。')
+            self.live_dir.mkdir(parents=True, exist_ok=True)
+            path = self.live_dir / 'control.json'
+            temporary = path.with_suffix('.tmp')
+            temporary.write_text(json.dumps({'reset_rotation': secrets.token_hex(8)}), encoding='utf-8')
+            temporary.replace(path)
             return self.status()
 
     def stop(self) -> None:
@@ -235,7 +263,8 @@ class ArucoService:
             preview = self.asset('preview') is not None and bool(report)
             message = self.message
             if self.phase == 'running' and camera.get('camera_opened'):
-                message = '已识别标记并显示 LEGO' if camera.get('overlay_pixels', 0) else f'摄像头已打开，寻找 ID {self.options["marker_id"]}'
+                name = camera.get('camera_device', {}).get('name', '摄像头')
+                message = '已识别标记并显示 LEGO' if camera.get('overlay_pixels', 0) else f'{name} 已打开，寻找 ID {self.options["marker_id"]}'
             error = camera.get('error') or ('\n'.join(self.logs)[-1600:] if self.phase == 'failed' else '')
             return dict(phase=self.phase, running=self._busy(), message=message,
                         model_name=self.model.name if self.model else '', model_path=str(self.model or ''),

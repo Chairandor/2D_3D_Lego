@@ -1,10 +1,39 @@
 # 用 ArUco 码展示你的乐高模型（Marker-based LEGO AR）
 
-## 仓库内使用
+## Gemini 与手势控制（2026-11-23）
 
-源码随 `2D_3D_Lego` 仓库提供，安装与路径配置见 [3D / ArUco 部署](../docs/SETUP_3D_AR.md)。合并 UI 位于本目录上一级的 `pipeline_ui.py`；从仓库根目录运行 `./start_aruco_ui.ps1`。
+默认相机现为 **Orbbec Gemini 2 的 SDK 彩色流**。ArUco、人体骨架、手部关键点、食指指向识别、实时网页和棋盘格标定共用 `camera_source.py`，输出统一的 BGR 图像；指定 Gemini 但未连接时明确报错，不换用其他相机。
 
-`.venv`、相机画面、标定文件、运行日志、LDraw 零件库和原始 LDR 模型不随源码提供。可在网页中上传自己的 LDR / MPD；独立窗口使用 `python aruco_lego_ar.py` 可显示程序生成的红砖，`start_ar.ps1 -Model demo` 对应此模式。下文中的绝对路径、示例模型和验收记录描述原开发机环境。
+网页继续使用 `2D_3D_Lego` 的 **ArUco 预览** 标签。选择 LDraw 后，保持相机来源为“Gemini 2 · 彩色流”，勾选“启用食指指向控制”和“显示人体与手部骨架”，启动摄像头。新依赖 MediaPipe 0.10.21 已装入本机独立 AR 环境；迁移时按更新后的 `requirements-lock.txt` 安装。MediaPipe Pose/Hands 使用安装包自带模型，运行时不下载大模型。
+
+伸出食指，收起中指、无名指和小指（拇指可自然伸出），按**未镜像视频画面中的方向**指向。只要求手部入镜，人体骨架显示保留，但不再以双肩可见性或手掌移动距离作为控制门槛：
+
+| 食指指向 | 显示动作 |
+| --- | --- |
+| 左 | 顺时针转动（从模型 +Z 上方看） |
+| 右 | 逆时针转动（从模型 +Z 上方看） |
+| 上 | 绕模型中心向后翻（标记 +Y 为后方） |
+| 下 | 绕模型中心向前翻（标记 -Y 为前方） |
+
+默认每次 30°，网页可调 5–90°。同一方向保持约 0.35 秒且至少采样三帧后转动一次；持续指着不会重复转。收回食指约 0.25 秒或改变方向可再次触发，两次动作间至少间隔 0.6 秒。手部有绿色方向箭头，网页显示当前方向和确认进度。大模型帧率较低时实际确认时间可能更长。张掌、握拳、V 字和对角指向不触发。网页模型与 AR 模型同步显示转动；“恢复模型朝向”只重置显示，不修改 LDraw 文件。人体使用 33 个关键点，每只手使用 21 个关键点；页面显示跟踪状态与最近动作，识别仍受光照、遮挡和动作幅度影响。
+
+本机直接复用用户指定 Lab2 的 **Orbbec SDK 1.8.3**：
+
+```text
+C:\Users\19653\Desktop\大三上\3D视觉\Lab2\.setup\tools\orbbec-1.8.3\OrbbecSDK_v1.8.3\SDK\lib\OrbbecSDK.dll
+```
+
+也可设置 `ORBBEC_SDK_DIR` 为 SDK 根目录、lib 目录或 DLL 完整路径，或设置 `GEMINI_LAB2_ROOT` 为 Lab2 根目录。通过 SDK 枚举名称含 Gemini 的设备，设备编号是 Gemini 列表中的编号；不会混用 Astra。彩色格式支持 RGB/BGR/BGRA/MJPEG/YUYV/UYVY/NV12/NV21，帧释放前复制像素。优先读取与当前彩色分辨率匹配的工厂内参，未获得匹配参数时在页面标明估计内参。当前不使用深度图做现实遮挡。
+
+```powershell
+.\start_ar.ps1 -Model chicken                 # Gemini + 骨架/手势
+.\start_ar.ps1 -CameraSource opencv           # 明确选择普通相机
+.\.venv\Scripts\python.exe calibrate_camera.py --camera-source gemini --square-size 0.018
+```
+
+Gemini 通过 USB3 连接；先关闭占用它的 InfraredViewer / Orbbec Viewer。Lab2 的驱动、固件和文件不改动。SDK 来源及接口见 [Orbbec SDK](https://github.com/orbbec/OrbbecSDK)，骨架与手部实现见 [MediaPipe 0.10.21](https://github.com/google-ai-edge/mediapipe/tree/v0.10.21/mediapipe/python/solutions)。
+
+2026-11-23 用户反馈挥动不稳定后，已删除挥动轨迹识别并改用食指指向。当前回归包括静止指向触发、持续保持不重复、收指/换向重新触发、低帧率、握拳/V 字/张掌/对角方向拒绝和中心旋转。此前 Gemini/相机接入的验证记录：16 项 AR 回归与 5 项 UI 回归通过；MediaPipe 实际初始化、空图推理通过；原有小鸡的标记图片→位姿→OpenGL 测试通过；网页模型上传、切换、手势设置、刷新、窄屏和 Gemini 未连接提示通过，证据在根项目 `artifacts/aruco_ui_1795439142222/`。SDK 已实际加载并完成设备查询。用户明确表示 Gemini 尚未连接、先完成代码，**因此尚未验证 Gemini 彩色实帧、Gemini 打印码叠加或真人四方向挥手效果**；轨迹回归不能代替这部分验收。
 
 ## 本机已配置入口（2026-11-01）
 
@@ -131,3 +160,6 @@ python aruco_lego_ar.py --model lego.glb --up-axis y --calibration calibration.n
 - 模型漂移/歪斜：标定摄像头、确保打印的是精确正方形、测准码边长、改善光照、避免晃动和镜头畸变。
 - 被现实中的物体遮住时模型仍盖在最上层：当前是基础 AR 叠加，没有现实物体深度遮挡；之后可用 RGB-D 深度图融合。
 - 这是示例项目，摄像头 / OpenGL 兼容性需在你的设备上实测。
+
+
+食指指向实机验收（2026-11-23）：已通过普通电脑摄像头识别指向并改变模型旋转矩阵，用户确认“已能转动”。当前模型为用户选择的 Jackjack。原始状态、动作日志及参数保存在根项目 `artifacts/pointing_live_20261123_223358_587601/report.json`。此结果仅证明普通摄像头的实际指向控制；Gemini 未连接，仍待实机验证。

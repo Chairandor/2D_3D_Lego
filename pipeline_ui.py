@@ -1619,6 +1619,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(ARUCO.select(str(data.get('path', ''))))
                 elif self.path == '/api/ar/start':
                     self.send_json(ARUCO.start(data))
+                elif self.path == '/api/ar/reset-rotation':
+                    self.send_json(ARUCO.reset_rotation())
                 elif self.path == '/api/ar/stop':
                     ARUCO.stop()
                     self.send_json(ARUCO.status())

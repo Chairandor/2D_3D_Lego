@@ -30,6 +30,7 @@ function mountPreview(url, force = false) {
   if (url) {
     view.className = 'model-preview';
     view.dataset.modelFormat = 'glb';
+    view.dataset.autoRotate = 'false';
     view.dataset.modelUrl = url;
     view.textContent = '正在加载乐高模型……';
   } else {
@@ -52,6 +53,7 @@ function render(data) {
   state = data;
   window.arucoState = state;
   const camera = state.camera || {}, report = state.report || {};
+  const gesture = camera.gesture || {};
   $('arBadge').textContent = state.message || '就绪';
   if (window.uiMode === 'ar') $('badge').textContent = 'AR · ' + (state.message || '就绪');
   $('arModelName').textContent = state.model_name || '尚未选择模型';
@@ -62,14 +64,25 @@ function render(data) {
   $('arColors').textContent = report.colors || '—';
   $('arRendered').textContent = (camera.rendered_frames || 0).toLocaleString();
   $('arRenderedStat').classList.toggle('success', camera.rendered_frames > 0);
-  $('arCameraLabel').textContent = state.running && camera.camera_opened ? '相机 ' + state.options.camera : '尚未启动';
+  $('arCameraLabel').textContent = state.running && camera.camera_opened ? camera.camera_device?.name || '相机 ' + state.options.camera : '尚未启动';
+  $('arCalibrationInfo').textContent = camera.intrinsics_source === 'gemini-color-factory' ? '使用当前 Gemini 彩色流的工厂内参。标记黑边尺寸仍须实测，精确对齐可进一步使用棋盘格标定。' : camera.intrinsics_source === 'estimated' ? '当前使用估计内参。精确比例与对齐需要实测标记尺寸和相机标定。' : 'Gemini 使用自己的 SDK 彩色流，优先读取彩色相机工厂内参。请连接 USB3 并关闭 Orbbec Viewer；标记黑边长仍须实测。';
   $('arStepModel').className = 'step ' + (state.preview_url ? 'active' : 'wait');
   $('arStepCamera').className = 'step ' + (camera.camera_opened ? 'active' : state.phase === 'running' ? 'wait' : '');
   $('arStepMarker').className = 'step ' + (camera.rendered_frames > 0 ? 'active' : camera.camera_opened ? 'wait' : '');
-  for (const id of ['arChoose', 'arLoadExample', 'arExamples', 'arCamera', 'arMarkerId', 'arMarkerSize', 'arFitWidth']) $(id).disabled = state.running;
+  for (const id of ['arChoose', 'arLoadExample', 'arExamples', 'arCameraSource', 'arCamera', 'arMarkerId', 'arMarkerSize', 'arFitWidth', 'arGestures', 'arSkeleton', 'arGestureAngle']) $(id).disabled = state.running;
   $('arStart').disabled = state.running || !state.preview_url;
   $('arStop').disabled = !state.running;
+  $('arResetRotation').disabled = !state.running || state.phase !== 'running';
   mountPreview(state.preview_url || '');
+  const preview = $('arModelView').querySelector('.model-preview');
+  if (preview) window.setModelPreviewRotation?.(preview, gesture.rotation_ar || [[1,0,0],[0,1,0],[0,0,1]]);
+  $('arPoseState').textContent = '人体骨架：' + (gesture.pose_detected && state.running ? '已跟踪' : '未检测');
+  $('arHandState').textContent = `手部：${state.running ? gesture.hands_detected || 0 : 0} 只 · 食指指向 ${state.running ? gesture.pointing_hands || 0 : 0} 只`;
+  $('arGestureCount').textContent = `指向：${gesture.sequence || 0} 次`;
+  const names = {left:'向左指', right:'向右指', up:'向上指', down:'向下指'};
+  $('arPointingNow').textContent = state.running && gesture.current_direction ? `当前指向：${names[gesture.current_direction]} · 保持进度 ${Math.round((gesture.hold_progress || 0)*100)}%` : '当前指向：未识别（请伸食指、收起其余三指）';
+  $('arGestureLast').textContent = gesture.last_direction ? `${names[gesture.last_direction]} · ${gesture.last_action} ${gesture.step_degrees}°` : gesture.sequence ? '已恢复初始朝向' : '尚无指向动作';
+  $('arGestureHint').textContent = !state.running ? '启动摄像头后，伸出食指指向左 / 右 / 上 / 下' : !state.options.gestures ? '指向控制已关闭' : gesture.hint || '正在加载人体与手部跟踪……';
   link('arDownloadModel', state.model_url, state.model_name);
   link('arDownloadPreview', state.preview_url, 'preview.glb');
   link('arSnapshot', state.snapshot_url);
@@ -125,12 +138,15 @@ $('arModelFile').onchange = async event => {
 };
 $('arLoadExample').onclick = () => act('/api/ar/select', {path: $('arExamples').value});
 $('arStart').onclick = () => {
-  const fields = ['arCamera', 'arMarkerId', 'arMarkerSize', 'arFitWidth'];
+  const fields = ['arCamera', 'arMarkerId', 'arMarkerSize', 'arFitWidth', 'arGestureAngle'];
   if (fields.some(id => !$(id).reportValidity())) return;
   act('/api/ar/start', {camera: $('arCamera').value, marker_id: $('arMarkerId').value,
-    marker_size_cm: $('arMarkerSize').value, fit_width_cm: $('arFitWidth').value});
+    camera_source: $('arCameraSource').value,
+    marker_size_cm: $('arMarkerSize').value, fit_width_cm: $('arFitWidth').value,
+    gestures: $('arGestures').checked, show_skeleton: $('arSkeleton').checked, gesture_angle: $('arGestureAngle').value});
 };
 $('arStop').onclick = () => act('/api/ar/stop', {});
+$('arResetRotation').onclick = () => act('/api/ar/reset-rotation', {});
 $('arResetView').onclick = () => mountPreview(previewUrl, true);
 $('modeArButton').onclick = () => window.setPipelineMode?.('ar');
 window.addEventListener('pipeline-mode-change', () => { if (window.uiMode === 'ar') refresh(); });
@@ -147,6 +163,10 @@ try {
   for (const [id, key] of [['arCamera', 'camera'], ['arMarkerId', 'marker_id'], ['arMarkerSize', 'marker_size_cm'], ['arFitWidth', 'fit_width_cm']]) {
     if (options[key] !== undefined) $(id).value = options[key];
   }
+  $('arGestures').checked = options.gestures !== false;
+  $('arSkeleton').checked = options.show_skeleton !== false;
+  $('arGestureAngle').value = options.gesture_angle || 30;
+  $('arCameraSource').value = options.camera_source || 'gemini';
   render(initial);
   if (window.uiMode === 'ar' || state.running) refresh();
 } catch (error) { notice('AR 面板初始化失败：' + error.message, true); }

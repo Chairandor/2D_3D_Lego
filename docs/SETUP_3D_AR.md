@@ -40,6 +40,12 @@ LEGO 生成仍使用独立的 legolization 环境。按 [部署说明](SETUP.md)
 
 ## ArUco 环境
 
+2026-11-23：相机默认改为 Gemini 2 SDK 彩色流，并新增 MediaPipe 0.10.21 骨架/食指指向依赖。现有环境也需主动执行下方依赖安装命令。本机已在相邻 `LEGOLIZER/aruco_lego/.venv` 完成安装。可以继续在 `ARUCO_PYTHON` 指定该独立环境。
+
+Gemini 使用 Windows x64 的 Orbbec SDK 1.x；当前适配依据用户 Lab2 的 SDK 1.8.3。将 `ORBBEC_SDK_DIR` 合入 `config.local.json` 指向该 SDK 的 `SDK/lib` 目录或 `OrbbecSDK.dll`；也可设置 `GEMINI_LAB2_ROOT` 指向 Lab2，代码会寻找其中已安装的 SDK。默认会查找 `~/Desktop/大三上/3D视觉/Lab2/.setup/tools/orbbec-1.8.3/OrbbecSDK_v1.8.3/SDK/lib/OrbbecSDK.dll`。仅加载用户现有 SDK，不将厂商 DLL 复制入仓库，不更换驱动或固件。
+
+网页选择 Gemini 后，ArUco、人体骨架、手部关键点、食指指向与网页视频都使用 SDK 彩色帧；单独的 `aruco_lego/calibrate_camera.py --camera-source gemini` 也使用同一入口。优先使用彩色流内参，不套用深度内参或 Astra 骨架接口。Gemini 未连接时明确报错，普通相机须显式选择。详细操作和本次验证限制见 [Gemini 与手势控制](../aruco_lego/README.md)。
+
 AR 与三维核心保持环境隔离：
 
 ```powershell

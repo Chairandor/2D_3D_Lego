@@ -11,11 +11,14 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from camera_source import open_camera
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--camera', type=int, default=0)
+    parser.add_argument('--camera-source', choices=['gemini', 'opencv'], default='gemini')
+    parser.add_argument('--orbbec-sdk', default='', help='Orbbec SDK 1.x folder or DLL')
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--height', type=int, default=480)
     parser.add_argument('--square-size', type=float, default=0.018,
@@ -28,11 +31,8 @@ def main():
     obj *= args.square_size
     obj_points, image_points = [], []
 
-    cap = cv2.VideoCapture(args.camera)
-    if not cap.isOpened():
-        raise RuntimeError('Cannot open camera')
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+    cap = open_camera(args.camera_source, args.camera, args.width, args.height, sdk_path=args.orbbec_sdk)
+    print('Calibration camera:', cap.info, flush=True)
     image_size = None
     print('SPACE: capture a DIFFERENT board pose; C: calibrate; Q: quit.')
     try:

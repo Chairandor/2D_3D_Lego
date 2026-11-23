@@ -1,6 +1,10 @@
 param(
     [ValidateSet('chicken', 'jackjack', 'demo')][string]$Model = 'chicken',
     [int]$Camera = 0,
+    [ValidateSet('gemini', 'opencv')][string]$CameraSource = 'gemini',
+    [string]$OrbbecSdk = '',
+    [switch]$DisableGestures,
+    [double]$GestureAngle = 30,
     [double]$MarkerSize = 0.06,
     [double]$FitWidth = 0.09,
     [int]$MarkerId = 0,
@@ -12,6 +16,9 @@ $arRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $arRoot
 $pythonExe = Join-Path $arRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $pythonExe)) {
+    $pythonExe = Join-Path (Split-Path -Parent $projectRoot) 'aruco_lego\.venv\Scripts\python.exe'
+}
+if (-not (Test-Path -LiteralPath $pythonExe)) {
     throw '缺少 AR 环境，请按 aruco_lego/README.md 安装依赖。'
 }
 $modelPath = switch ($Model) {
@@ -19,11 +26,18 @@ $modelPath = switch ($Model) {
     'jackjack' { Join-Path $projectRoot 'jackjack失败版.ldr' }
     'demo' { '' }
 }
+if ($modelPath -and -not (Test-Path -LiteralPath $modelPath)) {
+    $modelPath = Join-Path (Split-Path -Parent $projectRoot) (Split-Path -Leaf $modelPath)
+    if (-not (Test-Path -LiteralPath $modelPath)) { throw '未找到所选示例模型，请使用网页选择自己的 LDR / MPD。' }
+}
 $runDir = Join-Path $arRoot ('runs\live_' + (Get-Date -Format 'yyyyMMdd_HHmmss_fff'))
 $arArgs = @('-u', (Join-Path $arRoot 'aruco_lego_ar.py'), '--camera', "$Camera",
+    '--camera-source', $CameraSource,
     '--marker-size', "$MarkerSize", '--fit-width', "$FitWidth", '--marker-id', "$MarkerId",
     '--log-dir', $runDir)
 if ($modelPath) { $arArgs += @('--model', $modelPath) }
+if ($OrbbecSdk) { $arArgs += @('--orbbec-sdk', $OrbbecSdk) }
+if (-not $DisableGestures) { $arArgs += @('--gestures', '--gesture-angle', "$GestureAngle") }
 if ($Model -eq 'jackjack' -and -not $StudioColors) {
     $shortcutPath = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Studio 2.0.lnk'
     if (Test-Path -LiteralPath $shortcutPath) {

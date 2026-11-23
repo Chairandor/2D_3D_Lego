@@ -24,6 +24,8 @@ import trimesh
 # In Ubuntu/headless environments, set PYOPENGL_PLATFORM=egl BEFORE import pyrender.
 import pyrender
 from ldraw_mesh import load_ldraw
+from gesture_control import ModelRotation, SkeletonGestureTracker
+from camera_source import open_camera
 
 ARUCO_DICT = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 CV_TO_GL = np.diag([1.0, -1.0, -1.0, 1.0])
@@ -127,6 +129,8 @@ def main():
                         help='Target model maximum horizontal extent in meters')
     parser.add_argument('--calibration', default='', help='Optional calibration.npz with K and dist')
     parser.add_argument('--camera', type=int, default=0, help='OpenCV camera index')
+    parser.add_argument('--camera-source', choices=['gemini', 'opencv'], default='gemini', help='Gemini SDK color stream, or explicit ordinary camera')
+    parser.add_argument('--orbbec-sdk', default='', help='Orbbec SDK 1.x folder or OrbbecSDK.dll')
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--height', type=int, default=480)
     parser.add_argument('--marker-id', type=int, default=0, help='Target ID in DICT_4X4_50')
@@ -136,15 +140,21 @@ def main():
     parser.add_argument('--no-window', action='store_true', help='Stream to the integrated web UI without an OpenCV window')
     parser.add_argument('--frame-output', type=Path, help='Atomically update a local JPEG for the web UI')
     parser.add_argument('--stop-file', type=Path, help='Stop and release the camera when this file exists')
+    parser.add_argument('--gestures', action='store_true', help='Enable body skeleton, hands and index-finger pointing')
+    parser.add_argument('--gesture-angle', type=float, default=30, help='Degrees per confirmed finger direction (5 to 90)')
+    parser.add_argument('--no-skeleton', action='store_true', help='Track gestures without drawing skeleton lines')
+    parser.add_argument('--control-file', type=Path, help='Web UI rotation-reset commands')
     args = parser.parse_args()
     if args.marker_size <= 0 or args.fit_width <= 0 or not 0 <= args.marker_id < 50:
         parser.error('marker-size 和 fit-width 必须为正数；marker-id 范围为 0–49。')
+    if not np.isfinite(args.gesture_angle) or not 5 <= args.gesture_angle <= 90:
+        parser.error('gesture-angle 必须在 5–90 度之间。')
     if args.log_dir:
         args.log_dir.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
     status = dict(model=str(Path(args.model).resolve()) if args.model else 'demo',
                   marker_id=args.marker_id, marker_size_m=args.marker_size,
-                  camera=args.camera, camera_api=args.camera_api,
+                  camera=args.camera, camera_source=args.camera_source, camera_api=args.camera_api,
                   camera_opened=False, frames=0, detected_frames=0, rendered_frames=0,
                   detected_ids=[], current_ids=[], overlay_pixels=0, error=None)
 
@@ -167,33 +177,47 @@ def main():
         status['error'] = str(error)
         save_status()
         raise
-    apis = {'auto': cv2.CAP_ANY, 'dshow': cv2.CAP_DSHOW, 'msmf': cv2.CAP_MSMF}
-    api_names = [args.camera_api] if args.camera_api != 'auto' else (['dshow', 'msmf'] if os.name == 'nt' else ['auto'])
+    bounds = np.stack([mesh.bounds for mesh in mesh_list])
+    center = (bounds[:, 0].min(axis=0) + bounds[:, 1].max(axis=0)) / 2
+    rotation = ModelRotation(center, args.gesture_angle)
+    status['gesture'] = dict(enabled=args.gestures, show_skeleton=not args.no_skeleton, **rotation.status())
     cap = None
     frame = None
-    for api_name in api_names:
-        candidate = cv2.VideoCapture(args.camera, apis[api_name])
-        candidate.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-        candidate.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-        if candidate.isOpened():
-            for _ in range(15):
-                ok, frame = candidate.read()
-                if ok:
-                    cap = candidate
-                    break
+    try:
+        cap = open_camera(args.camera_source, args.camera, args.width, args.height, args.camera_api, args.orbbec_sdk)
+        for _ in range(8):
+            ok, frame = cap.read()
+            if ok:
+                break
+        if frame is None:
+            raise RuntimeError('相机已打开但未输出彩色帧，请检查 USB3 连接、相机占用和 SDK 流配置。')
+    except Exception as error:
         if cap is not None:
-            status['camera_api'] = api_name
-            break
-        candidate.release()
-    if cap is None:
-        status['error'] = f'无法从摄像头 {args.camera} 读取画面。关闭占用相机的应用，检查 Windows 相机权限，或尝试 --camera 1。'
+            cap.release()
+        status['error'] = str(error)
         save_status()
-        raise RuntimeError(status['error'])
+        raise
     status['camera_opened'] = True
+    status['camera_device'] = cap.info
+    status['camera_api'] = cap.info['backend']
     print(f'Camera {args.camera}: {status["camera_api"]}, {frame.shape[1]}x{frame.shape[0]}', flush=True)
     height, width = frame.shape[:2]
 
-    K, dist, calibrated = camera_matrix_for_frame(width, height, args.calibration)
+    try:
+        factory = cap.intrinsics() if not args.calibration else None
+        if factory is not None:
+            K, dist = factory
+            calibrated = True
+            status['intrinsics_source'] = 'gemini-color-factory'
+        else:
+            K, dist, calibrated = camera_matrix_for_frame(width, height, args.calibration)
+            status['intrinsics_source'] = 'calibration-file' if calibrated else 'estimated'
+        status['intrinsics'] = dict(K=K.tolist(), dist=dist.tolist(), size=[width, height])
+    except Exception as error:
+        cap.release()
+        status['error'] = str(error)
+        save_status()
+        raise
     if not calibrated:
         print('WARNING: Using estimated camera intrinsics. For stable/accurate AR, calibrate camera.')
 
@@ -225,7 +249,12 @@ def main():
     renderer = None
     last_saved = 0.0
     last_frame_saved = 0.0
+    tracker = None
+    control_mtime = 0
     try:
+        if args.gestures:
+            tracker = SkeletonGestureTracker()
+            print('POINTING READY: body 33 + hands 21; hold index direction 0.35s; left=CW, right=CCW, up=back, down=forward', flush=True)
         renderer = pyrender.OffscreenRenderer(viewport_width=width, viewport_height=height)
         print(f'Point camera at marker ID {args.marker_id}. Press q or ESC to exit.', flush=True)
         while True:
@@ -240,6 +269,33 @@ def main():
             # Render and detect on rectified image. This matches pyrender's
             # pinhole camera, which does not model lens distortion.
             frame = cv2.undistort(frame, K, dist) if calibrated else frame
+            now = time.monotonic()
+            if args.control_file and args.control_file.is_file():
+                modified = args.control_file.stat().st_mtime_ns
+                if modified != control_mtime:
+                    try:
+                        command = json.loads(args.control_file.read_text(encoding='utf-8'))
+                        if command.get('reset_rotation'):
+                            rotation.reset()
+                            if tracker:
+                                tracker.recognizer.reset()
+                            print('GESTURE ROTATION RESET', flush=True)
+                        control_mtime = modified
+                    except (OSError, ValueError):
+                        pass
+            if tracker:
+                direction = tracker.process(frame, now)
+                if direction:
+                    rotation.apply(direction, now)
+                    event = dict(direction=direction, elapsed_seconds=round(now - started, 3), **rotation.status())
+                    print('GESTURE: ' + json.dumps(event, ensure_ascii=False), flush=True)
+                    if args.log_dir:
+                        with (args.log_dir / 'gestures.jsonl').open('a', encoding='utf-8') as stream:
+                            stream.write(json.dumps(event, ensure_ascii=False) + '\n')
+            model_transform = rotation.advance(now)
+            status['gesture'].update(rotation.status())
+            if tracker:
+                status['gesture'].update(tracker.info)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             corners, ids, _ = detector.detectMarkers(gray)
             visible_pixels = 0
@@ -263,7 +319,7 @@ def main():
                     # Convert camera axes OpenCV (+x right,+y down,+z forward)
                     # to OpenGL (+x right,+y up,-z forward).
                     T_marker_to_gl = CV_TO_GL @ T_marker_to_cv
-                    scene.set_pose(model_node, pose=T_marker_to_gl)
+                    scene.set_pose(model_node, pose=T_marker_to_gl @ model_transform)
                     color_rgb, depth = renderer.render(scene)
                     visible = depth > 0
                     visible_pixels = int(visible.sum())
@@ -276,6 +332,14 @@ def main():
                     cv2.drawFrameAxes(frame, K, np.zeros(5), rvec, tvec,
                                      s * 0.6, 2)
 
+            if tracker and not args.no_skeleton:
+                tracker.draw(frame)
+            if tracker:
+                direction = rotation.last_direction or '-'
+                current = tracker.info.get('current_direction') or '-'
+                progress = int(tracker.info.get('hold_progress', 0) * 100)
+                cv2.putText(frame, f'Hands: {tracker.info["hands_detected"]} | Point: {current} {progress}% | Last: {direction}',
+                            (15, height - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (40, 200, 250), 2)
             label = f'ID {args.marker_id}: ' + ('AR OK' if visible_pixels else 'searching')
             status['overlay_pixels'] = visible_pixels
             cv2.putText(frame, f'ArUco LEGO AR | {label}' + (' | q: quit' if not args.no_window else ''), (15, 27),
@@ -309,6 +373,8 @@ def main():
         save_status()
         if renderer is not None:
             renderer.delete()
+        if tracker is not None:
+            tracker.close()
         cap.release()
         cv2.destroyAllWindows()
 
