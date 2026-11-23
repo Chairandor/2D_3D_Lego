@@ -17,7 +17,7 @@ import open3d as o3d
 
 from legolizer.constants import DEFAULT_PROJECT_DIR, STUD_PITCH_MM, BRICK_HEIGHT_MM
 from legolizer.integrations.backend import run_strict_backend
-from legolizer.processing3d.conversion import point_cloud_to_mesh
+from legolizer.processing3d.conversion import reconstruct_poisson_local
 from legolizer.processing3d.mesh import cleanup_mesh, mesh_stats, normalize_mesh, read_mesh, write_mesh
 from legolizer.processing3d.orientation import orientation_matrix, score_mesh_orientations
 from legolizer.processing3d.colors import COMMON_LDRAW_COLORS
@@ -25,7 +25,7 @@ from legolizer.processing3d.texturing import export_preview_glb, export_texture_
 from legolizer.processing3d.voxel import mesh_to_voxel
 
 
-from legolizer.processing3d.flow_config import FLOWS, validate_options
+from legolizer.processing3d.flow_config import FLOWS, POINT_CLOUD_MESH_PROFILE, validate_options
 
 
 BRICK_VOXEL_MM = (STUD_PITCH_MM, STUD_PITCH_MM, BRICK_HEIGHT_MM)
@@ -77,7 +77,7 @@ def run_pipeline(source: Path, output: Path, flow: str, options: dict,
             raise ValueError("这份 PLY 是 Mesh，请选择点云 PLY；当前两条 PLY 路径用于点云重建")
     output.mkdir(parents=True, exist_ok=True)
     stages = [dict(id="source", label="原始 STL" if flow == "stl" else "原始点云", status="pending"),
-              dict(id="mesh", label="网格清理" if flow == "stl" else "法向与表面重建", status="pending")]
+              dict(id="mesh", label="网格清理" if flow == "stl" else "改进 Poisson 表面重建", status="pending")]
     if flow == "ply_color":
         stages.append(dict(id="texture", label="颜色传递与 UV 贴图", status="pending"))
     stages.extend([dict(id="voxel", label="定尺与彩色体素", status="pending"),
@@ -162,17 +162,9 @@ def run_pipeline(source: Path, output: Path, flow: str, options: dict,
             write_mesh(mesh_path, mesh)
         else:
             o3d.utility.random.seed(0)
-            normal_radius = max(float(np.linalg.norm(raw.get_axis_aligned_bounding_box().get_extent())) * .02,
-                                np.finfo(float).eps)
-            state["report"]["reconstruction"] = dict(method="poisson", input_points=len(raw.points),
-                normal_radius_mm=normal_radius, normal_max_nn=30,
-                normal_consistency_neighbors=min(50, len(raw.points) - 1),
-                poisson_depth=options["poisson_depth"], density_quantile=options["density_quantile"],
-                bounding_box_crop_factor=1.05)
-            mesh = point_cloud_to_mesh(points_path, mesh_path,
-                                       normal_radius=normal_radius, normal_max_nn=30,
-                                       poisson_depth=options["poisson_depth"],
-                                       density_quantile=options["density_quantile"])
+            mesh, reconstruction = reconstruct_poisson_local(
+                raw, poisson_depth=options["poisson_depth"], density_quantile=options["density_quantile"])
+            state["report"]["reconstruction"] = dict(reconstruction, profile=POINT_CLOUD_MESH_PROFILE)
             if flow == "ply_color":
                 state["report"]["color_transfer"] = transfer_point_colors(mesh, raw)
             else:

@@ -56,6 +56,10 @@ class FilePipelineTests(unittest.TestCase):
             self.assertEqual(result["status"], "prepared")
             self.assertTrue(result["report"]["source"]["source_has_colors"])
             self.assertFalse(result["report"]["source"]["has_colors"])
+            reconstruction = result["report"]["reconstruction"]
+            self.assertEqual(reconstruction["profile"], "poisson-local")
+            self.assertEqual(reconstruction["normal_orientation"], dict(k=30, lambda_penalty=10., cos_alpha_tol=.5))
+            self.assertAlmostEqual(reconstruction["normal_radius_mm"], 3 * reconstruction["point_spacing_median_mm"])
             reconstructed = o3d.io.read_triangle_mesh(str(root / "plain/mesh/reconstructed_mm.ply"))
             self.assertFalse(reconstructed.has_vertex_colors())
             self.assertEqual(source.read_bytes(), original)

@@ -23,10 +23,13 @@ if str(CORE_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(CORE_ROOT / "src"))
 
 try:
-    from legolizer.processing3d.flow_config import FLOWS, validate_options
+    from legolizer.processing3d import flow_config
+    FLOWS, validate_options = flow_config.FLOWS, flow_config.validate_options
+    POINT_CLOUD_MESH_PROFILE = getattr(flow_config, "POINT_CLOUD_MESH_PROFILE", None)
     CORE_AVAILABLE = True
 except ModuleNotFoundError:
     CORE_AVAILABLE = False
+    POINT_CLOUD_MESH_PROFILE = None
     FLOWS = {
         "stl": dict(label="STL → LEGO", demo="bunny.stl", unit=1000., axis="y"),
         "ply_plain": dict(label="无色 PLY → Mesh → LEGO", demo="rhino.ply", unit=1., axis="y"),
@@ -237,10 +240,22 @@ class ThreeDController:
         return self.status(flow)
 
     def load_demo(self, flow: str) -> dict:
-        rows = [r for r in self.history(flow) if _read(Path(r["output"]) / "pipeline3d.json").get("source") == str(self.demo(flow).resolve())]
-        rows.sort(key=lambda r: (bool(_read(Path(r["output"]) / "pipeline3d.json").get("report", {}).get("legolization", {}).get("model_path")), r.get("started", 0)), reverse=True)
-        if rows:
-            return self.load(flow, rows[0]["output"])
+        demo_source = str(self.demo(flow).resolve())
+        candidates = []
+        for row in self.history(flow):
+            state = _read(Path(row["output"]) / "pipeline3d.json")
+            if state.get("source") != demo_source:
+                continue
+            report = state.get("report", {})
+            if flow != "stl" and POINT_CLOUD_MESH_PROFILE:
+                if report.get("reconstruction", {}).get("profile") != POINT_CLOUD_MESH_PROFILE:
+                    continue
+                if not any(a.get("id") == "mesh_ply" and Path(a.get("path", "")).is_file()
+                           for a in state.get("assets", [])):
+                    continue
+            candidates.append((bool(report.get("legolization", {}).get("model_path")), row.get("started") or 0, row["output"]))
+        if candidates:
+            return self.load(flow, max(candidates)[2])
         return self.start(dict(flow=flow, source="demo", prepare_only=True))
 
     def history(self, flow: str) -> list:

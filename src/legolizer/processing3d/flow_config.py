@@ -3,6 +3,9 @@
 import math
 
 
+POINT_CLOUD_MESH_PROFILE = "poisson-local"
+
+
 FLOWS = {
     "stl": {"label": "STL → LEGO", "demo": "bunny.stl", "unit": 1000., "axis": "y"},
     "ply_plain": {"label": "无色 PLY → Mesh → LEGO", "demo": "rhino.ply", "unit": 1., "axis": "y"},

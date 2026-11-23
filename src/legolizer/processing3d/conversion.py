@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import open3d as o3d
+from scipy.spatial import cKDTree
 
 from legolizer.processing3d.mesh import cleanup_mesh, read_mesh, write_mesh
 
@@ -50,6 +51,45 @@ def _prepare_normals(
     return radius
 
 
+def _poisson_mesh(
+    cloud: o3d.geometry.PointCloud, depth: int, density_quantile: float, n_threads: int = -1,
+) -> o3d.geometry.TriangleMesh:
+    if not 0 <= density_quantile < 1:
+        raise ValueError("density_quantile 必须位于 [0, 1)")
+    mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+        cloud, depth=depth, n_threads=n_threads
+    )
+    if density_quantile > 0:
+        values = np.asarray(densities)
+        mesh.remove_vertices_by_mask(values < np.quantile(values, density_quantile))
+    bounds = cloud.get_axis_aligned_bounding_box()
+    return mesh.crop(bounds.scale(1.05, bounds.get_center()))
+
+
+def reconstruct_poisson_local(
+    cloud: o3d.geometry.PointCloud, *, poisson_depth: int, density_quantile: float,
+) -> tuple[o3d.geometry.TriangleMesh, dict]:
+    """以点距自适应邻域和平行切平面约束重建网格，保留原点云供颜色传递。"""
+    input_points = len(cloud.points)
+    cloud = o3d.geometry.PointCloud(cloud).remove_duplicated_points()
+    points = np.asarray(cloud.points)
+    if len(points) < 3 or not np.isfinite(points).all():
+        raise ValueError("点云需要至少 3 个互异的有限点才能重建表面")
+    neighbors = cKDTree(points).query(points, k=2, workers=4)[0][:, 1]
+    spacing = float(np.median(neighbors))
+    radius = 3.0 * spacing
+    cloud.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=30))
+    orientation = None
+    if len(points) >= 10:
+        orientation = dict(k=min(30, len(points) - 1), lambda_penalty=10.0, cos_alpha_tol=0.5)
+        cloud.orient_normals_consistent_tangent_plane(**orientation)
+    mesh = cleanup_mesh(_poisson_mesh(cloud, poisson_depth, density_quantile, n_threads=4))
+    return mesh, dict(method="poisson", input_points=input_points, distinct_points=len(points),
+                      point_spacing_median_mm=spacing, normal_radius_mm=radius, normal_max_nn=30,
+                      normal_orientation=orientation, poisson_depth=poisson_depth, density_quantile=density_quantile,
+                      bounding_box_crop_factor=1.05, n_threads=4)
+
+
 def point_cloud_to_mesh(
     point_cloud_path: str | Path,
     output_path: str | Path,
@@ -69,19 +109,7 @@ def point_cloud_to_mesh(
     radius = _prepare_normals(point_cloud, normal_radius, normal_max_nn)
 
     if method == "poisson":
-        mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-            point_cloud, depth=poisson_depth
-        )
-        density_values = np.asarray(densities)
-        if not 0 <= density_quantile < 1:
-            raise ValueError("density_quantile 必须位于 [0, 1)")
-        if density_quantile > 0:
-            mesh.remove_vertices_by_mask(
-                density_values < np.quantile(density_values, density_quantile)
-            )
-        bbox = point_cloud.get_axis_aligned_bounding_box()
-        bbox = bbox.scale(1.05, bbox.get_center())
-        mesh = mesh.crop(bbox)
+        mesh = _poisson_mesh(point_cloud, poisson_depth, density_quantile)
     elif method == "ball-pivoting":
         distances = np.asarray(point_cloud.compute_nearest_neighbor_distance())
         base_radius = float(np.mean(distances)) if len(distances) else radius
