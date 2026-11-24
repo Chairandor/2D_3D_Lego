@@ -16,6 +16,8 @@ import numpy as np
 from PIL import Image
 import trimesh
 
+from project_config import load_pymeshlab
+
 
 def normalized_mask(mask: np.ndarray, size: int = 256) -> np.ndarray:
     rows, cols = np.nonzero(mask)
@@ -82,7 +84,7 @@ def compare_silhouettes(mesh: trimesh.Trimesh, reference: np.ndarray) -> tuple[d
 def preview_mesh(mesh: trimesh.Trimesh, max_faces: int = 30000) -> trimesh.Trimesh:
     if len(mesh.faces) <= max_faces:
         return mesh
-    import pymeshlab
+    pymeshlab = load_pymeshlab()
 
     scene = pymeshlab.MeshSet()
     scene.add_mesh(pymeshlab.Mesh(

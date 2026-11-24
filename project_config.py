@@ -4,7 +4,22 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import ExitStack
+from importlib import import_module, util
 from pathlib import Path
+
+
+def load_pymeshlab():
+    """Expose the installed package's native libraries during Windows plugin loading."""
+    with ExitStack() as dll_paths:
+        if os.name == "nt":
+            spec = util.find_spec("pymeshlab")
+            if spec and spec.origin:
+                package = Path(spec.origin).parent
+                for directory in (package, package / "lib"):
+                    if directory.is_dir():
+                        dll_paths.enter_context(os.add_dll_directory(str(directory)))
+        return import_module("pymeshlab")
 
 
 def resolve_core_root(root: Path) -> Path:

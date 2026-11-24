@@ -13,6 +13,8 @@ from pathlib import Path
 import sys
 import time
 
+from project_config import load_pymeshlab
+
 
 ROOT = Path(__file__).resolve().parent
 HY3D_ROOT = ROOT / "Hunyuan3D-2"
@@ -41,6 +43,9 @@ def main() -> None:
     from huggingface_hub import snapshot_download
     from PIL import Image
     from requests.exceptions import ChunkedEncodingError, ConnectionError, ReadTimeout
+
+    if os.name == "nt":
+        load_pymeshlab()
     from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 
     if not torch.cuda.is_available():
