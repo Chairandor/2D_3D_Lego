@@ -17,7 +17,7 @@ class ThreeDJobsTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         (self.root / "datasets/others").mkdir(parents=True)
         for name in ["bunny.stl", "rhino.ply", "tiko_10000_points.ply"]:
             (self.root / "datasets/others" / name).write_bytes(b"fixture")
