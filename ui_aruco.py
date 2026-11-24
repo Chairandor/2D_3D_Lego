@@ -17,6 +17,15 @@ from project_config import resolve_core_root, terminate_process_tree, venv_execu
 from ui_3d_jobs import find_ldraw
 
 
+def ldraw_upload_text(raw: bytes) -> str:
+    if not raw or len(raw) > 32 * 1024 * 1024:
+        raise ValueError('模型文件为空或超过 32 MB。')
+    try:
+        return raw.decode('utf-8-sig')
+    except UnicodeDecodeError as exc:
+        raise ValueError('LDraw 文件须为 UTF-8 文本；请重新导出为 LDR / MPD。') from exc
+
+
 def validate_camera_options(data: dict) -> dict:
     """校验界面的厘米参数，并转换为 AR 使用的米制参数。"""
     result = {}
@@ -67,6 +76,8 @@ class ArucoService:
         self.options = validate_camera_options({})
         self.started = 0.0
         self.studio_colors: str | None = None
+        self.board_mode = False
+        self.placements: list[dict] = []
 
     def _busy(self) -> bool:
         return self.process is not None and self.process.poll() is None
@@ -157,6 +168,7 @@ class ArucoService:
             self._launch([str(self.root / 'aruco_worker.py'), '--ar-root', str(self.ar_root),
                           '--model', str(model), '--output', str(output), *self._dependency_args()], 'preparing')
             self.model, self.preview_dir, self.live_dir = model, output, None
+            self.board_mode = False
             self.message = '正在读取零件和颜色，生成模型预览……'
             return self.status()
 
@@ -164,12 +176,7 @@ class ArucoService:
         """保留上传文件的独立副本，拒绝不支持或过大的输入。"""
         if Path(name).suffix.lower() not in {'.ldr', '.mpd'}:
             raise ValueError('只支持 .ldr 和 .mpd 文件。')
-        if not raw or len(raw) > 32 * 1024 * 1024:
-            raise ValueError('模型文件为空或超过 32 MB。')
-        try:
-            raw.decode('utf-8-sig')
-        except UnicodeDecodeError as exc:
-            raise ValueError('LDraw 文件须为 UTF-8 文本；请重新导出为 LDR / MPD。') from exc
+        ldraw_upload_text(raw)
         with self.lock:
             if self._busy():
                 raise RuntimeError('请先停止当前任务，再选择模型。')
@@ -192,27 +199,72 @@ class ArucoService:
             if hashlib.sha256(self.model.read_bytes()).hexdigest() != report['source_sha256']:
                 raise ValueError('源模型已变化，请重新载入后再启动摄像头。')
             live = self.preview_dir / ('live_' + secrets.token_hex(4))
-            command = [str(self.ar_root / 'aruco_lego_ar.py'), '--model', str(self.model),
-                       '--camera-source', options['camera_source'],
-                       '--camera', str(options['camera']), '--marker-id', str(options['marker_id']),
-                       '--marker-size', str(options['marker_size_cm'] / 100),
-                       '--fit-width', str(options['fit_width_cm'] / 100),
-                       '--no-window', '--log-dir', str(live), '--frame-output', str(live / 'frame.jpg'),
-                       '--stop-file', str(live / 'stop.request'),
-                       '--control-file', str(live / 'control.json'), *self._dependency_args()]
+            command = self._camera_command(options, live)
+            command += ['--model', str(self.model), '--fit-width', str(options['fit_width_cm'] / 100)]
             if options['gestures']:
                 command += ['--gestures', '--gesture-angle', str(options['gesture_angle'])]
             if not options['show_skeleton']:
                 command += ['--no-skeleton']
             self._launch(command, 'running')
             self.options, self.live_dir = options, live
+            self.board_mode = False
             self.message = '正在打开摄像头……'
+            return self.status()
+
+    def _camera_command(self, options: dict, live: Path) -> list[str]:
+        command = [str(self.ar_root / 'aruco_lego_ar.py'),
+                   '--camera-source', options['camera_source'],
+                   '--camera', str(options['camera']), '--marker-id', str(options['marker_id']),
+                   '--marker-size', str(options['marker_size_cm'] / 100),
+                   '--no-window', '--log-dir', str(live), '--frame-output', str(live / 'frame.jpg'),
+                   '--stop-file', str(live / 'stop.request'), '--control-file', str(live / 'control.json'),
+                   *self._dependency_args()]
+        if calibration := os.environ.get('ARUCO_CALIBRATION'):
+            command += ['--calibration', str(Path(calibration).expanduser().resolve())]
+        return command
+
+    def start_board(self, data: dict) -> dict:
+        options = validate_camera_options({'camera_source': 'opencv', 'marker_size_cm': 5,
+                                           **data, 'gestures': False, 'show_skeleton': False})
+        with self.lock:
+            if self._busy():
+                raise RuntimeError('摄像头已被当前 AR 任务使用。')
+            live = self.root / 'runs' / 'aruco' / ('board_' + secrets.token_hex(8))
+            self._launch(self._camera_command(options, live) + ['--board'], 'running')
+            self.board_mode = True
+            self.placements = []
+            self.options, self.live_dir = options, live
+            self.message = '正在打开摄像头……'
+            return self.status()
+
+    def place_on_board(self, path: Path, label: str, data: dict) -> dict:
+        try:
+            x_cm, y_cm, angle = (float(data[key]) for key in ('x_cm', 'y_cm', 'angle'))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError('位置和朝向须为有效数字。') from exc
+        if not all(map(math.isfinite, (x_cm, y_cm, angle))):
+            raise ValueError('位置和朝向须为有效数字。')
+        if path.suffix.lower() not in {'.mpd', '.ldr'} or not path.is_file():
+            raise ValueError('找不到这张 LEGO 卡片对应的模型。')
+        with self.lock:
+            if not self.board_mode or not self._busy() or self.phase != 'running' or self.live_dir is None:
+                raise RuntimeError('请先开启图片页摄像头。')
+            control = self.live_dir / 'control.json'
+            if not control.parent.is_dir():
+                raise RuntimeError('摄像头正在启动，请稍后再试。')
+            placement = dict(id=secrets.token_hex(8), path=str(path), label=label,
+                             x_cm=x_cm, y_cm=y_cm, angle=angle % 360)
+            entries = [*self.placements, placement]
+            temporary = control.with_suffix('.tmp')
+            temporary.write_text(json.dumps({'placements': entries}, ensure_ascii=False), encoding='utf-8')
+            temporary.replace(control)
+            self.placements = entries
             return self.status()
 
     def reset_rotation(self) -> dict:
         """向当前相机任务发送显示朝向重置，不改动模型文件。"""
         with self.lock:
-            if not self._busy() or self.live_dir is None or self.phase != 'running':
+            if self.board_mode or not self._busy() or self.live_dir is None or self.phase != 'running':
                 raise ValueError('请先启动摄像头，再恢复模型朝向。')
             self.live_dir.mkdir(parents=True, exist_ok=True)
             path = self.live_dir / 'control.json'
@@ -221,9 +273,11 @@ class ArucoService:
             temporary.replace(path)
             return self.status()
 
-    def stop(self) -> None:
+    def stop(self, *, board_only: bool = False) -> None:
         """优先让渲染进程自行释放摄像头，超时仅终止本服务启动的任务。"""
         with self.lock:
+            if board_only and not self.board_mode:
+                return
             process = self.process
             if process is None or process.poll() is not None:
                 return
@@ -264,7 +318,10 @@ class ArucoService:
             message = self.message
             if self.phase == 'running' and camera.get('camera_opened'):
                 name = camera.get('camera_device', {}).get('name', '摄像头')
-                message = '已识别标记并显示 LEGO' if camera.get('overlay_pixels', 0) else f'{name} 已打开，寻找 ID {self.options["marker_id"]}'
+                if self.board_mode and camera.get('marker_tracked'):
+                    message = '已识别硬板'
+                else:
+                    message = '已识别标记并显示 LEGO' if camera.get('overlay_pixels', 0) else f'{name} 已打开，寻找 ID {self.options["marker_id"]}'
             error = camera.get('error') or ('\n'.join(self.logs)[-1600:] if self.phase == 'failed' else '')
             return dict(phase=self.phase, running=self._busy(), message=message,
                         model_name=self.model.name if self.model else '', model_path=str(self.model or ''),
@@ -272,6 +329,6 @@ class ArucoService:
                         model_url='/api/ar/file?kind=model' if self.model else '',
                         frame_available=self.asset('frame') is not None,
                         snapshot_url='/api/ar/file?kind=snapshot' if self.asset('snapshot') else '',
-                        report=report, camera=camera, options=self.options,
+                        report=report, camera=camera, options=self.options, board_mode=self.board_mode,
                         elapsed=round(time.monotonic() - self.started, 1) if self.started else 0,
                         error=error, logs='\n'.join(self.logs))

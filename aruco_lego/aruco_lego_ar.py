@@ -23,12 +23,14 @@ import trimesh
 
 # In Ubuntu/headless environments, set PYOPENGL_PLATFORM=egl BEFORE import pyrender.
 import pyrender
+from board_scene import BoardScene, board_lighting
 from ldraw_mesh import load_ldraw
 from gesture_control import ModelRotation, SkeletonGestureTracker
 from camera_source import open_camera
 
 ARUCO_DICT = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 CV_TO_GL = np.diag([1.0, -1.0, -1.0, 1.0])
+LDU_METERS = 0.0004
 
 
 def create_marker(path: Path):
@@ -53,8 +55,8 @@ def demo_brick():
     return meshes
 
 
-def load_lego_meshes(path: str, up_axis: str, fit_width: float, ldraw_dir: str = '', studio_colors: str = '') -> list[trimesh.Trimesh]:
-    """Load colored geometry and fit its footprint onto the marker plane."""
+def load_lego_meshes(path: str, up_axis: str, fit_width: float | None, ldraw_dir: str = '', studio_colors: str = '') -> list[trimesh.Trimesh]:
+    """Load colored geometry with its footprint centered at the marker plane."""
     if not path:
         return demo_brick()
 
@@ -68,9 +70,12 @@ def load_lego_meshes(path: str, up_axis: str, fit_width: float, ldraw_dir: str =
             [0.0, 1.0, 0.0]
         ])
 
-    if Path(path).suffix.lower() in ('.ldr', '.mpd'):
+    is_ldraw = Path(path).suffix.lower() in ('.ldr', '.mpd')
+    if is_ldraw:
         meshes = load_ldraw(path, ldraw_dir, studio_colors)  # Already converted from LDraw -Y to +Z.
     else:
+        if fit_width is None:
+            raise ValueError('实际尺寸摆放需要 LDraw 模型。')
         source = trimesh.load(path, force='scene')
         for node_name in source.graph.nodes_geometry:
             transform, geometry_name = source.graph[node_name]
@@ -94,7 +99,7 @@ def load_lego_meshes(path: str, up_axis: str, fit_width: float, ldraw_dir: str =
                             max_corner[1] - min_corner[1])
     if horizontal_extent <= 0:
         raise ValueError('Model is degenerate (zero horizontal extent).')
-    scale = fit_width / horizontal_extent
+    scale = LDU_METERS if fit_width is None else fit_width / horizontal_extent
     for mesh in meshes:
         mesh.vertices = (mesh.vertices - origin) * scale
     return meshes
@@ -144,11 +149,14 @@ def main():
     parser.add_argument('--gesture-angle', type=float, default=30, help='Degrees per confirmed finger direction (5 to 90)')
     parser.add_argument('--no-skeleton', action='store_true', help='Track gestures without drawing skeleton lines')
     parser.add_argument('--control-file', type=Path, help='Web UI rotation-reset commands')
+    parser.add_argument('--board', action='store_true', help='Read on-board LDraw placements from the control file')
     args = parser.parse_args()
     if args.marker_size <= 0 or args.fit_width <= 0 or not 0 <= args.marker_id < 50:
         parser.error('marker-size 和 fit-width 必须为正数；marker-id 范围为 0–49。')
     if not np.isfinite(args.gesture_angle) or not 5 <= args.gesture_angle <= 90:
         parser.error('gesture-angle 必须在 5–90 度之间。')
+    if args.board and args.control_file is None:
+        parser.error('--board 需要 --control-file。')
     if args.log_dir:
         args.log_dir.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
@@ -163,7 +171,10 @@ def main():
             status['elapsed_seconds'] = round(time.monotonic() - started, 2)
             temporary = args.log_dir / 'status.tmp'
             temporary.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding='utf-8')
-            temporary.replace(args.log_dir / 'status.json')
+            try:
+                temporary.replace(args.log_dir / 'status.json')
+            except PermissionError:
+                pass  # The Windows UI can still be reading the preceding status.
 
     marker_path = Path(__file__).resolve().parent / 'aruco_id0.png'
     if not marker_path.exists():
@@ -172,15 +183,18 @@ def main():
 
     # Load before taking control of the camera, so missing parts fail promptly.
     try:
-        mesh_list = load_lego_meshes(args.model, args.up_axis, args.fit_width, args.ldraw_dir, args.studio_colors)
+        mesh_list = [] if args.board else load_lego_meshes(
+            args.model, args.up_axis, args.fit_width, args.ldraw_dir, args.studio_colors)
     except Exception as error:
         status['error'] = str(error)
         save_status()
         raise
-    bounds = np.stack([mesh.bounds for mesh in mesh_list])
-    center = (bounds[:, 0].min(axis=0) + bounds[:, 1].max(axis=0)) / 2
-    rotation = ModelRotation(center, args.gesture_angle)
-    status['gesture'] = dict(enabled=args.gestures, show_skeleton=not args.no_skeleton, **rotation.status())
+    rotation = None
+    if mesh_list:
+        bounds = np.stack([mesh.bounds for mesh in mesh_list])
+        center = (bounds[:, 0].min(axis=0) + bounds[:, 1].max(axis=0)) / 2
+        rotation = ModelRotation(center, args.gesture_angle)
+        status['gesture'] = dict(enabled=args.gestures, show_skeleton=not args.no_skeleton, **rotation.status())
     cap = None
     frame = None
     try:
@@ -235,24 +249,32 @@ def main():
 
     scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0],
                            ambient_light=[0.35, 0.35, 0.35])
-    # One mesh with multiple primitives can retain materials from separate parts.
-    model = pyrender.Mesh.from_trimesh(mesh_list, smooth=False)
-    for primitive in model.primitives:
-        primitive.material.doubleSided = True
-    model_node = scene.add(model, pose=np.eye(4))
+    board = None
+    model_node = None
+    if args.board:
+        board = BoardScene(scene, args.control_file, lambda path: load_lego_meshes(
+            path, 'z', None, args.ldraw_dir, args.studio_colors))
+    else:
+        # One mesh with multiple primitives can retain materials from separate parts.
+        model = pyrender.Mesh.from_trimesh(mesh_list, smooth=False)
+        for primitive in model.primitives:
+            primitive.material.doubleSided = True
+        model_node = scene.add(model, pose=np.eye(4))
 
     camera = pyrender.IntrinsicsCamera(K[0, 0], K[1, 1], K[0, 2], K[1, 2],
                                        znear=0.005, zfar=20.0)
     scene.add(camera, pose=np.eye(4))
-    light = pyrender.DirectionalLight(color=np.ones(3), intensity=3.0)
-    scene.add(light, pose=np.eye(4))
+    if board:
+        board_lighting(scene)
+    else:
+        scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=3.0), pose=np.eye(4))
     renderer = None
     last_saved = 0.0
     last_frame_saved = 0.0
     tracker = None
     control_mtime = 0
     try:
-        if args.gestures:
+        if args.gestures and rotation:
             tracker = SkeletonGestureTracker()
             print('POINTING READY: body 33 + hands 21; hold index direction 0.35s; left=CW, right=CCW, up=back, down=forward', flush=True)
         renderer = pyrender.OffscreenRenderer(viewport_width=width, viewport_height=height)
@@ -270,7 +292,11 @@ def main():
             # pinhole camera, which does not model lens distortion.
             frame = cv2.undistort(frame, K, dist) if calibrated else frame
             now = time.monotonic()
-            if args.control_file and args.control_file.is_file():
+            if board:
+                board.update()
+                status['placed_models'] = len(board.nodes)
+                status['placement_errors'] = list(board.errors.values())
+            elif args.control_file and args.control_file.is_file():
                 modified = args.control_file.stat().st_mtime_ns
                 if modified != control_mtime:
                     try:
@@ -292,13 +318,15 @@ def main():
                     if args.log_dir:
                         with (args.log_dir / 'gestures.jsonl').open('a', encoding='utf-8') as stream:
                             stream.write(json.dumps(event, ensure_ascii=False) + '\n')
-            model_transform = rotation.advance(now)
-            status['gesture'].update(rotation.status())
+            if rotation:
+                model_transform = rotation.advance(now)
+                status['gesture'].update(rotation.status())
             if tracker:
                 status['gesture'].update(tracker.info)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             corners, ids, _ = detector.detectMarkers(gray)
             visible_pixels = 0
+            status['marker_tracked'] = False
             status['current_ids'] = list(map(int, ids.flatten())) if ids is not None else []
             if ids is not None:
                 status['detected_ids'] = sorted(set(status['detected_ids']) | set(map(int, ids.flatten())))
@@ -319,16 +347,21 @@ def main():
                     # Convert camera axes OpenCV (+x right,+y down,+z forward)
                     # to OpenGL (+x right,+y up,-z forward).
                     T_marker_to_gl = CV_TO_GL @ T_marker_to_cv
-                    scene.set_pose(model_node, pose=T_marker_to_gl @ model_transform)
-                    color_rgb, depth = renderer.render(scene)
-                    visible = depth > 0
-                    visible_pixels = int(visible.sum())
-                    if visible_pixels:
-                        status['rendered_frames'] += 1
-                        if status['rendered_frames'] == 1:
-                            print(f'AR SUCCESS: detected ID {args.marker_id}, overlay={visible_pixels} pixels', flush=True)
-                    color_bgr = cv2.cvtColor(color_rgb, cv2.COLOR_RGB2BGR)
-                    frame[visible] = color_bgr[visible]
+                    status['marker_tracked'] = True
+                    if board:
+                        board.set_pose(T_marker_to_gl)
+                    else:
+                        scene.set_pose(model_node, pose=T_marker_to_gl @ model_transform)
+                    if not board or board.nodes:
+                        color_rgb, depth = renderer.render(scene)
+                        visible = depth > 0
+                        visible_pixels = int(visible.sum())
+                        if visible_pixels:
+                            status['rendered_frames'] += 1
+                            if status['rendered_frames'] == 1:
+                                print(f'AR SUCCESS: detected ID {args.marker_id}, overlay={visible_pixels} pixels', flush=True)
+                        color_bgr = cv2.cvtColor(color_rgb, cv2.COLOR_RGB2BGR)
+                        frame[visible] = color_bgr[visible]
                     cv2.drawFrameAxes(frame, K, np.zeros(5), rvec, tvec,
                                      s * 0.6, 2)
 
@@ -340,7 +373,7 @@ def main():
                 progress = int(tracker.info.get('hold_progress', 0) * 100)
                 cv2.putText(frame, f'Hands: {tracker.info["hands_detected"]} | Point: {current} {progress}% | Last: {direction}',
                             (15, height - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (40, 200, 250), 2)
-            label = f'ID {args.marker_id}: ' + ('AR OK' if visible_pixels else 'searching')
+            label = f'ID {args.marker_id}: ' + ('AR OK' if status['marker_tracked'] else 'searching')
             status['overlay_pixels'] = visible_pixels
             cv2.putText(frame, f'ArUco LEGO AR | {label}' + (' | q: quit' if not args.no_window else ''), (15, 27),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)

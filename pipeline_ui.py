@@ -204,6 +204,14 @@ def artifact_inventory(run_dir: Path | None) -> list[dict[str, object]]:
                 item["preview_format"] = path.suffix.lower().removeprefix(".")
             result.append(item)
     ldraw_available = (LDRAW_ROOT / "parts").is_dir() and (LDRAW_ROOT / "LDConfig.ldr").is_file()
+    for path in sorted((run_dir / "lego" / "uploads").glob("*/model-*.mpd")):
+        if path.is_file() and ui_result_folders.inside(path, run_dir):
+            result.append(artifact_version({
+                "label": path.stem.removeprefix("model-"),
+                "kind": "model",
+                "relative": path.relative_to(run_dir).as_posix(),
+                **({"preview_format": "mpd"} if ldraw_available else {}),
+            }, path))
     for model_id, path, name in model_editing.saved_models(run_dir):
         result.append(artifact_version({"label": name, "kind": "model", "preview_format": "glb",
                                         "relative": path.relative_to(run_dir).as_posix(), "model_id": model_id}, path))
@@ -322,7 +330,7 @@ def artifact_groups(
     groups = []
     for relative in dict.fromkeys([*old, *current, *(primary if console else ())]):
         previous, latest = old.get(relative), current.get(relative)
-        if relative.startswith(("model_edits/", "lego_sources/")):
+        if relative.startswith(("model_edits/", "lego_sources/", "lego/uploads/")):
             groups.append({"relative": relative, "stage": "", "original": latest or previous,
                            "candidate": None, "choice": None, "stale": False})
             continue
@@ -864,6 +872,52 @@ class PipelineController:
             self.returncode = 0
             self.started_at = None
         return run_dir, model
+
+    def import_mpd(self, name: str, raw: bytes) -> tuple[Path, Path]:
+        contents = ui_aruco.ldraw_upload_text(raw)
+        has_geometry = False
+        for line in contents.splitlines():
+            fields = line.split(maxsplit=14)
+            if fields and fields[0] == "1" and len(fields) == 15:
+                reference = fields[14].strip().replace("\\", "/")
+                if reference.startswith("/") or ":" in reference or ".." in reference.split("/"):
+                    raise ValueError("MPD 的零件引用须使用模型内名称或 LDraw 零件库路径")
+                has_geometry = True
+            elif fields and ((fields[0] == "3" and len(fields) == 11) or (fields[0] == "4" and len(fields) == 14)):
+                has_geometry = True
+        if not has_geometry:
+            raise ValueError("MPD 文件没有可显示的 LDraw 零件或几何")
+
+        stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", Path(name).stem).strip(" .") or "LEGO 模型"
+        upload_id = secrets.token_hex(8)
+        with self.lock:
+            if self.worker_active or self.opened_view() is not None:
+                raise RuntimeError("请在可编辑的图片页成果中上传 MPD")
+            run = self.run_dir
+            new_run = run is None or not run.is_dir()
+            if new_run:
+                run = ROOT / "runs" / f"imported-mpd-{upload_id}"
+            public = ui_revisions.root_run_dir(run, ROOT)
+            model = public / "lego" / "uploads" / upload_id / f"model-{stem[:80].rstrip(' .')}.mpd"
+            if not ui_result_folders.inside(model, public) or not within_root(model):
+                raise ValueError("上传位置须位于当前成果的项目目录内")
+            model.parent.mkdir(parents=True, exist_ok=False)
+            temporary = model.with_suffix(".tmp")
+            try:
+                temporary.write_bytes(raw)
+                temporary.replace(model)
+                ui_run_state.mark_changed(run, ROOT)
+                if new_run:
+                    current_view(run)
+                    self.run_dir = self.pipeline_run_dir = run
+                    self.image = None
+            except Exception:
+                model.unlink(missing_ok=True)
+                raise
+            finally:
+                temporary.unlink(missing_ok=True)
+            self.message = "已上传 LEGO 模型"
+        return run, model
 
     def select_generated_model(self) -> Path:
         with self.lock:
@@ -1644,6 +1698,30 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
 .model-edit-dialog{width:min(1280px,calc(100vw - 40px));height:calc(100dvh - 40px);max-height:none;padding:0;border:1px solid var(--line);border-radius:18px;background:var(--panel);color:var(--ink);overflow:hidden;box-shadow:0 22px 75px #23251f45}
 .model-edit-dialog[open]{display:grid;grid-template-rows:auto minmax(0,1fr)}.model-edit-dialog::backdrop{background:#23251f75}.model-edit-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line)}.model-edit-head h2{margin:0;font-size:18px;overflow-wrap:anywhere}.model-edit-actions{display:flex;flex:none;gap:8px}.model-edit-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,32%);min-height:0}.model-edit-view{min-width:0;min-height:0;padding:15px}.model-edit-view .model-preview{height:100%;border:1px solid var(--line);border-radius:12px}.model-edit-chat{display:flex;flex-direction:column;min-height:0;border-left:1px solid var(--line);background:#fbfaf6}.model-edit-chat h3{margin:0;padding:14px 16px;font-size:15px;border-bottom:1px solid var(--line)}.model-edit-chat form{display:grid;gap:8px;padding:12px;border-top:1px solid var(--line)}.model-edit-chat textarea{width:100%;min-height:74px;resize:vertical;padding:9px;border:1px solid var(--line);border-radius:10px;font:inherit}.model-edit-chat form button{justify-self:end}.model-card-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;min-width:0}.model-card-heading .title-link{overflow-wrap:anywhere;font-weight:750;font-size:13px}.model-card-heading .delete-model{padding:4px 8px;font-size:13px;color:#852c20;background:#f3e4df}
 @media(max-width:720px){.model-edit-body{grid-template-columns:1fr;grid-template-rows:minmax(160px,1fr) minmax(195px,1fr)}.model-edit-chat{border-left:0;border-top:1px solid var(--line)}.model-edit-view{padding:8px}.model-edit-dialog{width:calc(100vw - 16px);height:calc(100dvh - 16px)}}
+.board-switch{display:flex;gap:4px;margin-bottom:9px}
+.board-switch button{padding:6px 12px;font-size:12px}
+.board-switch button[aria-pressed=true]{background:#dfeade;color:#285a3f}
+.board-ar{border:1px solid var(--line);border-radius:13px;overflow:hidden}
+.board-ar [hidden],.board-ar[hidden]{display:none}
+.board-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:7px;padding:9px}
+.board-toolbar select{width:auto;padding:6px;font-size:12px}
+.board-toolbar button,.board-form button{padding:7px 10px;font-size:12px}
+.board-status{font-size:12px;color:var(--muted);padding:0 10px 8px}
+.board-status.error{color:#8a2a1c}
+.board-view{height:clamp(360px,55dvh,680px);position:relative;display:grid;place-items:center;background:#20231f;color:#fff;overflow:hidden}
+.board-view.is-drop-target::after{content:"";position:absolute;inset:0;border:3px solid #f2c94c;pointer-events:none}
+.board-view img{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:contain}
+.board-view>span{padding:14px;text-align:center;font-size:13px}
+@media(min-width:1101px){.grid.board-mode{grid-template-columns:clamp(320px,26vw,400px) minmax(0,1fr)}}
+@media(max-width:900px){.board-view{height:clamp(245px,58vw,460px)}}
+.board-form{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(390px,calc(100% - 24px));padding:13px;border-radius:12px;background:var(--panel);color:var(--ink);box-shadow:0 8px 24px #0005}
+.board-form h3{margin:0;font-size:14px}
+.board-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.board-fields label{margin:9px 0 3px;font-size:11px}
+.board-fields input{padding:7px}
+.board-form-actions{display:flex;justify-content:flex-end;gap:6px}
+.artifact .info[draggable=true]{cursor:grab;user-select:none}
+.artifact .info[draggable=true]:active{cursor:grabbing}
 </style></head>
 <body><div class="shell">
 <div class="hero"><div><h1>2D → Hunyuan → UniTEX → LEGO</h1><p>本地实验控制台 · 阶段验收 · 断点续跑</p></div><div id="badge" class="badge">就绪</div></div>
@@ -1689,8 +1767,32 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
 <div class="stop-actions"><button id="stageStopButton" class="danger" type="button" onclick="stopRun()" disabled>停止当前任务</button></div>
 </section>
 <section class="panel"><div class="steps" id="steps"><div class="step">输入</div><div class="step">Hunyuan 几何</div><div class="step">UniTEX 六视图</div><div class="step">贴图与校正</div><div class="step">LEGO</div></div>
-<div class="meta"><span id="runDir">尚未运行</span><span id="elapsed">0 秒</span></div><div id="notices" class="notices"></div><div id="log" class="log">等待任务……</div>
-<div class="artifact-heading"><h2 style="margin-top:18px">产物与预览</h2><button type="button" onclick="$('modelFile').click()">上传自己的 GLB</button><input id="modelFile" type="file" accept=".glb,model/gltf-binary" hidden onchange="upload3D(this)"></div><div id="artifacts" class="empty">运行后会在这里显示检查图和模型下载链接</div>
+<div class="meta"><span id="runDir">尚未运行</span><span id="elapsed">0 秒</span></div><div id="notices" class="notices"></div>
+<div class="board-switch" aria-label="工作区视图"><button type="button" id="boardShowLog" aria-controls="log" aria-pressed="true">日志</button><button type="button" id="boardShowCamera" aria-controls="boardCamera" aria-pressed="false">摄像头</button></div>
+<div id="log" class="log">等待任务……</div>
+<section id="boardCamera" class="board-ar" aria-label="硬板 AR 预览" hidden>
+  <div class="board-toolbar">
+    <select id="boardCameraSource" aria-label="相机来源"><option value="opencv">普通摄像头</option><option value="gemini">Gemini 2</option></select>
+    <button type="button" class="primary" id="boardStart">开启摄像头</button>
+    <button type="button" id="boardStop" disabled>停止摄像头</button>
+  </div>
+  <div id="boardStatus" class="board-status" role="status">使用 ID 0，外侧黑框边长 5 cm</div>
+  <div id="boardDrop" class="board-view">
+    <img id="boardFrame" alt="硬板的实时摄像头画面" hidden>
+    <span id="boardPlaceholder">开启摄像头后，将码放入画面</span>
+    <form id="boardPlacement" class="board-form" aria-labelledby="boardModelName" hidden>
+      <h3 id="boardModelName"></h3>
+      <div class="board-fields">
+        <div><label for="boardX">X（cm）</label><input type="number" id="boardX" step="any" required></div>
+        <div><label for="boardY">Y（cm）</label><input type="number" id="boardY" step="any" required></div>
+        <div><label for="boardAngle">朝向（°）</label><input type="number" id="boardAngle" step="any" required></div>
+      </div>
+      <p class="hint">以码中心为原点，X 沿红轴，Y 沿绿轴。</p>
+      <div class="board-form-actions"><button type="button" id="boardCancel">取消</button><button type="submit" class="primary" id="boardConfirm">确认摆放</button></div>
+    </form>
+  </div>
+</section>
+<div class="artifact-heading"><h2 style="margin-top:18px">产物与预览</h2><button type="button" onclick="$('modelFile').click()">上传 GLB / MPD</button><input id="modelFile" type="file" accept=".glb,.mpd,model/gltf-binary" hidden onchange="upload3D(this)"></div><div id="artifacts" class="empty">运行后会在这里显示检查图和模型下载链接</div>
 </section></div></div>
 <button id="assistantLaunch" class="assistant-launch" onclick="toggleAssistant(true)">打开阶段助手</button>
 <aside id="assistantPanel" class="assistant-panel" hidden aria-label="阶段助手">
@@ -1719,6 +1821,7 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
 <script type="importmap">{"imports":{"three":"/static/three/three.module.js","three/addons/":"/static/three/addons/"}}</script>
 <script type="module" src="/static/model-preview.js"></script>
 <script src="/static/model-edit.js"></script>
+<script src="/static/board-ar.js"></script>
 <script>
 const $=id=>document.getElementById(id); let polling=false, artifactSignature=null, currentRunDir='', formInitialized=false, assistantSelection=null, chatTurns=[], pendingChoice=null, revisionRelative='', pointerStart=null, assistantJobId='', assistantJobLine=null;
 async function api(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});const d=await r.json();if(!r.ok)throw new Error(d.error||'请求失败');return d}
@@ -1826,13 +1929,14 @@ function renderArtifacts(groups, readOnly=false, running=false, verifyingStuds=n
     return a.studs===verifyingStuds&&(a.lego_model_id||'')===verifyingModelId?'验证中…':'验证并修复';
   };
   const title=a=>a.lego_validation!=='pending'&&/\.(mpd|ldr)$/i.test(artifactPath(a))?`<a class="title-link" data-lego-detail href="/lego?${esc(new URLSearchParams({path:artifactPath(a),label:a.label}).toString())}" title="${esc(artifactPath(a))}">${esc(a.label)}</a>`:`<b title="${esc(artifactPath(a))}">${esc(a.label)}</b>`;
+  const boardDragData=a=>/\.(mpd|ldr)$/i.test(artifactPath(a))?` data-board-model="${esc(a.url)}" data-board-label="${esc(a.label)}"`:'';
   const modelCardTitle=(a,g,selectable)=>{
     if(readOnly||selectable||g.ai_edit||(g.relative!=='unitex/textured_mesh.glb'&&!a.model_id)) return title(a);
     const name=esc(a.label);
     const remove=a.model_id?`<button type="button" class="delete-model" data-delete-model="${a.model_id}" data-name="${name}" title="删除模型" aria-label="删除模型">🗑</button>`:'';
     return `<div class="model-card-heading"><a class="title-link" href="#modelEditDialog" data-model-edit="${a.model_id||''}" title="${esc(artifactPath(a))}">${name}</a>${remove}</div>`;
   };
-  const card=(a,g,version,selectable=false)=>`<div class="artifact ${(selectable&&!readOnly)?'choice-card':''}" ${selectable?`data-relative="${esc(g.relative)}" data-version="${version}" data-ai-edit="${g.ai_edit?'1':'0'}"`:''}>${visual(a)}${selectable?`<span class="version-tag">${version==='original'?'原版':'修改版'}</span>`:''}${g.stale?'<span class="stale-tag">旧结果</span>':''}<div class="info">${!readOnly&&a.comparison_url?`<a class="title-link" href="${esc(a.comparison_url)}" target="_blank" rel="noopener" title="${esc(artifactPath(a))}">${esc(a.label)}</a>`:modelCardTitle(a,g,selectable)}${a.preview_format==='mpd'?'<span class="credit">零件几何：<a href="https://www.ldraw.org/" target="_blank" rel="noopener">LDraw Parts Library</a></span>':''}<div class="artifact-actions"><a href="${esc(a.url)}" target="_blank" rel="noopener" title="打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB">打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB</a>${!readOnly&&g.ai_edit&&g.choice==='candidate'?`<button type="button" data-ai-reset="1">恢复原模型</button>`:''}${a.lego_validation&&!readOnly&&!g.stale?`<button class="primary${a.lego_validation==='verified'?' is-verified':''}" type="button" data-verify-lego="${a.studs}" data-lego-model-id="${a.lego_model_id||''}" ${running||a.lego_validation!=='pending'?'disabled':''}>${verificationLabel(a)}</button>`:''}${g.stage&&!g.stale&&!readOnly&&!g.ai_edit&&!a.lego_validation?`<button class="upload-revision" type="button" data-upload="${esc(g.relative)}">上传修改版</button>`:''}</div>${!readOnly&&selectable&&pendingChoice?.relative===g.relative&&pendingChoice?.version===version?`<div class="choice-confirm" role="group" aria-label="确认选择这版卡片"><div class="choice-prompt">确认选这版吗？</div><div class="choice-options"><button data-confirm="yes">是</button><button data-confirm="no">否</button></div></div>`:''}</div></div>`;
+  const card=(a,g,version,selectable=false)=>`<div class="artifact ${(selectable&&!readOnly)?'choice-card':''}" ${selectable?`data-relative="${esc(g.relative)}" data-version="${version}" data-ai-edit="${g.ai_edit?'1':'0'}"`:''}>${visual(a)}${selectable?`<span class="version-tag">${version==='original'?'原版':'修改版'}</span>`:''}${g.stale?'<span class="stale-tag">旧结果</span>':''}<div class="info"${boardDragData(a)}>${!readOnly&&a.comparison_url?`<a class="title-link" href="${esc(a.comparison_url)}" target="_blank" rel="noopener" title="${esc(artifactPath(a))}">${esc(a.label)}</a>`:modelCardTitle(a,g,selectable)}${a.preview_format==='mpd'?'<span class="credit">零件几何：<a href="https://www.ldraw.org/" target="_blank" rel="noopener">LDraw Parts Library</a></span>':''}<div class="artifact-actions"><a href="${esc(a.url)}" target="_blank" rel="noopener" title="打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB">打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB</a>${!readOnly&&g.ai_edit&&g.choice==='candidate'?`<button type="button" data-ai-reset="1">恢复原模型</button>`:''}${a.lego_validation&&!readOnly&&!g.stale?`<button class="primary${a.lego_validation==='verified'?' is-verified':''}" type="button" data-verify-lego="${a.studs}" data-lego-model-id="${a.lego_model_id||''}" ${running||a.lego_validation!=='pending'?'disabled':''}>${verificationLabel(a)}</button>`:''}${g.stage&&!g.stale&&!readOnly&&!g.ai_edit&&!a.lego_validation?`<button class="upload-revision" type="button" data-upload="${esc(g.relative)}">上传修改版</button>`:''}</div>${!readOnly&&selectable&&pendingChoice?.relative===g.relative&&pendingChoice?.version===version?`<div class="choice-confirm" role="group" aria-label="确认选择这版卡片"><div class="choice-prompt">确认选这版吗？</div><div class="choice-options"><button data-confirm="yes">是</button><button data-confirm="no">否</button></div></div>`:''}</div></div>`;
   const group=g=>g.candidate&&!g.choice?`<div class="artifact-pair"><div class="pair-title">${esc(g.original.label)}${readOnly?' · 待确认':' · 选择一版'}</div><div class="pair-cards">${card(g.original,g,'original',true)}${card(g.candidate,g,'candidate',true)}</div></div>`:card(g.choice==='candidate'?g.candidate:g.original,g,g.choice||'',false);
   const isIntermediate=g=>intermediatePaths.has(g.relative)&&!g.ai_edit;
   const main=groups.filter(g=>!isIntermediate(g));
@@ -1841,6 +1945,7 @@ function renderArtifacts(groups, readOnly=false, running=false, verifyingStuds=n
   $('artifacts').innerHTML=groups.length
     ?main.map(group).join('')+(intermediate.length?`<details id="intermediateArtifacts" class="artifact-disclosure" ${expanded?'open':''}><summary>查看中间产物</summary><div class="artifacts">${intermediate.map(group).join('')}</div></details>`:'')
     :'运行后会在这里显示检查图和模型下载链接';
+  window.syncBoardDrag?.();
   window.mountModelPreviews?.();
 }
 function toggleAssistant(open){$('assistantPanel').hidden=!open;$('assistantLaunch').hidden=open;document.body.classList.toggle('assistant-open',open)}
@@ -1853,7 +1958,26 @@ function selectAssistant(button){assistantSelection={mode:button.dataset.mode,va
 selectAssistant(document.querySelector('.picker-option[data-mode="model"]'));
 function chatLine(role,text){const el=document.createElement('div');el.className='chat-line '+role;el.textContent=text;$('chatHistory').append(el);$('chatHistory').scrollTop=$('chatHistory').scrollHeight;return el}
 async function sendChat(){const message=$('chatInput').value.trim();if(!message)return;$('chatInput').value='';chatLine('user',message);const wait=chatLine('assistant','思考中……');$('sendChat').disabled=true;try{if(assistantSelection.value==='geometry_edit'){await api('/api/ai-edit/start',{instruction:message});wait.textContent='已提交 3D 模型修改，正在分析模型与指令……';poll3DEdit(wait);return}const d=await api('/api/assistant/chat',{run_dir:currentRunDir,mode:assistantSelection.mode,value:assistantSelection.value,message,history:chatTurns});wait.textContent=d.answer;chatTurns.push({role:'user',content:message},{role:'assistant',content:d.answer});if(d.job){assistantJobId=d.job.id;assistantJobLine=chatLine('assistant','任务已排队……');$('stopAssistantJob').hidden=false;pollAssistantJob()}}catch(e){wait.textContent=e.message}finally{$('sendChat').disabled=false}}
-async function upload3D(input){const file=input.files[0];if(!file)return;try{if(!file.name.toLowerCase().endsWith('.glb'))throw new Error('请上传 GLB 文件');const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(file)});const d=await api('/api/ai-edit/upload',{name:file.name,data});currentRunDir=d.run_dir;formInitialized=false;artifactSignature=null;await refresh();chatLine('assistant','3D 模型已加载。在右侧阶段助手选择“修改 3D 模型”，然后输入修改要求。')}catch(e){alert('上传 GLB 失败：'+e.message)}finally{input.value=''}}
+async function upload3D(input){
+  const file=input.files[0];
+  if(!file)return;
+  const isMpd=/\.mpd$/i.test(file.name);
+  try{
+    if(!isMpd&&!/\.glb$/i.test(file.name))throw new Error('请上传 GLB 或 MPD 文件');
+    const data=await new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(String(reader.result).split(',')[1]);
+      reader.onerror=()=>reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+    const response=await api(isMpd?'/api/lego/upload':'/api/ai-edit/upload',{name:file.name,data});
+    if(!isMpd||response.run_dir!==currentRunDir)formInitialized=false;
+    currentRunDir=response.run_dir;
+    artifactSignature=null;
+    await refresh();
+    if(!isMpd)chatLine('assistant','3D 模型已加载。在右侧阶段助手选择“修改 3D 模型”，然后输入修改要求。');
+  }catch(e){alert('上传模型失败：'+e.message)}finally{input.value=''}
+}
 async function accept3DResult(){try{await api('/api/ai-edit/accept',{});chatLine('assistant','已采用最新模型，后续乐高化将使用它。');artifactSignature=null;refresh()}catch(e){chatLine('assistant',e.message)}}
 async function reset3DResult(){try{await api('/api/ai-edit/reset',{});artifactSignature=null;refresh();chatLine('assistant','已恢复原模型。')}catch(e){chatLine('assistant',e.message)}}
 async function stop3DResult(){try{await api('/api/ai-edit/stop',{});refresh()}catch(e){chatLine('assistant',e.message)}}
@@ -1922,6 +2046,20 @@ def lego_model_path(value: str) -> Path:
     if folder is not None and not ui_result_folders.downloadable(path, folder):
         raise ValueError("该文件不属于当前成果的 LEGO 产物")
     return ui_lego_details.model_path(value, folder if folder is not None else ROOT)
+
+
+def board_model(url: str) -> tuple[Path, str]:
+    for group in CONTROLLER.status()["artifact_groups"]:
+        choice = group.get("choice")
+        assets = [group.get(choice)] if choice else [group["original"], group.get("candidate")]
+        for asset in assets:
+            if asset and asset.get("url") == url:
+                parsed = urllib.parse.urlsplit(url)
+                value = urllib.parse.parse_qs(parsed.query).get("path", [""])[0]
+                path = Path(value).resolve()
+                if parsed.path == "/file" and path.suffix.lower() in {".mpd", ".ldr"} and downloadable_file(path):
+                    return path, str(asset["label"])
+    raise ValueError("请选择当前成果中的 LEGO 模型卡片。")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2145,6 +2283,14 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(ARUCO.select(str(data.get('path', ''))))
                 elif self.path == '/api/ar/start':
                     self.send_json(ARUCO.start(data))
+                elif self.path == '/api/ar/board/start':
+                    self.send_json(ARUCO.start_board(data))
+                elif self.path == '/api/ar/board/place':
+                    path, label = board_model(str(data.get('model', '')))
+                    self.send_json(ARUCO.place_on_board(path, label, data))
+                elif self.path == '/api/ar/board/stop':
+                    ARUCO.stop(board_only=True)
+                    self.send_json(ARUCO.status())
                 elif self.path == '/api/ar/reset-rotation':
                     self.send_json(ARUCO.reset_rotation())
                 elif self.path == '/api/ar/stop':
@@ -2218,6 +2364,13 @@ class Handler(BaseHTTPRequestHandler):
                     raise RuntimeError("主流水线正在运行，请先等待它到达验收点")
                 AI_EDITOR.start(CONTROLLER.run_dir, {"instruction": data.get("instruction", "")})
                 self.send_json({"ok": True})
+            elif self.path == "/api/lego/upload":
+                name = str(data.get("name", ""))
+                if Path(name).suffix.lower() != ".mpd":
+                    raise ValueError("请上传 MPD 文件")
+                raw = base64.b64decode(str(data.get("data", "")), validate=True)
+                run_dir, model = CONTROLLER.import_mpd(name, raw)
+                self.send_json({"ok": True, "run_dir": str(run_dir), "model": str(model)})
             elif self.path == "/api/ai-edit/upload":
                 if CONTROLLER.is_running() or AI_EDITOR.is_running():
                     raise RuntimeError("当前任务正在运行，请等待完成")
