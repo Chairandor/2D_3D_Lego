@@ -6,6 +6,11 @@ import urllib.request
 
 
 USER_AGENT = "codex_cli_rs/0.77.0 (Windows 10.0.26100; x86_64) WindowsTerminal"
+DEFAULT_CHAT_MODEL = "gpt-5.6-sol"
+
+
+def chat_model() -> str:
+    return os.environ.get("ASSISTANT_RELAY_MODEL", DEFAULT_CHAT_MODEL).strip()
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

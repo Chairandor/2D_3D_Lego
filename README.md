@@ -23,7 +23,7 @@
 - 支持两种部署方式：Windows 本机配合远端 UniTEX；或在 Linux / A800 上完成全部阶段，UniTEX 直接本机调用，无需 SSH 回连。
 - 有输入、几何、六视图和 LEGO 构建的验收开关，支持断点续跑。
 - UI 展示图像与模型下载链接、停止任务、求解警告及 Legolization 原生推荐宽度；GLB、PLY 模型可在卡片中自动旋转、拖动查看，LEGO MPD 预览还需要本机 LDraw 零件库。
-- 可选的右侧阶段助手通过百炼 API 对话；可对输入透明底图、UniTEX 六视图生成图片候选，并调用一部分 Legolization CLI 工作流。候选须在卡片上确认，原版和旧阶段产物不会立即覆盖。
+- 可选的右侧阶段助手默认使用 GPT‑5.6 Sol。配置相关 API 后，可修改输入透明底图或 UniTEX 六视图，也可调用部分 Legolization CLI 工作流。助手生成的候选须在卡片上确认。
 - 同一模型可生成多个 Stud 尺寸，结果分别保存在 `lego-8/`、`lego-16/` 等目录。
 - 点击 LEGO 卡片名称打开当前网页内的覆盖页面，进入成品展示、拼搭说明书或候选方案比较。成品页支持零件统计、逐项彩色缩略图，以及只包含清单的图文 PDF 导出。
 - 拼搭说明书使用队友 `instructions` 分支的原生规划和渲染代码：左侧显示步骤图，右侧显示本步零件，支持翻步和 PDF 下载。已有说明书直接读取；没有时自动排队生成，图文完成即可打开，静力分析继续运行。
@@ -62,7 +62,7 @@ ArUco 页面已经合并进 `pipeline_ui.py`，与图片、3D 文件流程共用
 Linux / A800 部署与现有环境复用见 [Linux 部署说明](docs/SETUP_LINUX.md)，使用 `bash pipeline_ui.sh --port 7865` 启动。下面是原有 Windows 方式。
 
 1. 按 [部署说明](docs/SETUP.md) 准备 Windows 本机和 Linux GPU 服务器。
-2. 将 `config.example.json` 复制为 `config.local.json`，填写自己的 SSH 地址、密钥路径和远端目录。若要使用阶段助手，另行设置 `DASHSCOPE_API_KEY` 环境变量；不设置也能运行主流水线。
+2. 将 `config.example.json` 复制为 `config.local.json`，填写自己的 SSH 地址、密钥路径和远端目录。阶段助手按 [配置说明](ASSISTANT_UI.md) 另行启用。
 3. 双击 `pipeline_ui.bat`，打开 `http://127.0.0.1:7865/`。
 4. 上传图片，逐阶段检查产物后勾选验收项继续。相同输出目录会复用已有结果；一般不要勾选强制重跑。
 

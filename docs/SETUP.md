@@ -205,14 +205,16 @@ GPU 编号指远端物理 GPU 编号；只有一张卡时应使用 0。UI 中的
 
 ### 可选：配置阶段助手
 
-主流水线不需要 LLM API。若要在右侧使用对话及图片修改，请自行申请百炼 API Key，在启动 UI 的 Windows 用户环境中设置 `DASHSCOPE_API_KEY`。例如仅对**当前 PowerShell 窗口**生效，可先输入：
+主流水线可独立运行。右侧阶段助手默认使用 GPT‑5.6 Sol。请在环境变量或本机 `config.local.json` 中设置 `ASSISTANT_RELAY_BASE_URL` 和 `ASSISTANT_RELAY_API_KEY`，然后重启 UI。仅在当前 PowerShell 窗口配置时，可以这样启动：
 
 ```powershell
-$env:DASHSCOPE_API_KEY = Read-Host '输入百炼 API Key'
+$env:ASSISTANT_RELAY_BASE_URL = Read-Host '输入 GPT API 地址'
+$relayKey = Read-Host '输入 GPT API Key' -AsSecureString
+$env:ASSISTANT_RELAY_API_KEY = [pscredential]::new('relay', $relayKey).GetNetworkCredential().Password
 .\pipeline_ui.bat
 ```
 
-不要把真实 Key 写入 `config.local.json`、README、截图或 Git 提交。`config.local.json` 仅接受 UniTEX 等本地路径配置；助手 Key 由 UI 进程读取环境变量。若使用 Windows 用户环境变量界面设置，设置后要重新打开终端并重启 UI。默认对话模型为 `qwen3.8-max`，也可在 UI 中选 `qwen3.8-flash`；图片编辑默认使用 `qwen-image-2.1-pro`。`DASHSCOPE_BASE_URL`、`DASHSCOPE_IMAGE_MODEL` 仅在明确需要切换百炼兼容端点或图片模型时设置。图片编辑会把选中的图片发送到百炼服务，可能产生 API 费用。
+密钥只保存在本机配置或环境变量中。若通过 Windows 用户环境变量界面设置，重新打开终端后再启动 UI。图像编辑和百炼选项见 [阶段助手说明](../ASSISTANT_UI.md)。
 
 阶段助手生成的是候选，不会直接覆盖原版。选定输入图片后会从输入阶段建立新分支；选定六视图后会复用无色模型和 UniTEX 缓存建立贴图分支。两者都需在卡片上确认并手动运行下一验收点。LEGO 助手能调用的操作与限制见 [阶段助手说明](../ASSISTANT_UI.md)。
 

@@ -216,7 +216,7 @@ def _image_edit(
         raise ValueError("图片修改要求必须为 1–1000 字")
     if source.stat().st_size > 10 * 1024 * 1024:
         raise ValueError("图像编辑要求输入图片不超过 10 MB")
-    relay = bool(image_relay_model() or os.environ.get("ASSISTANT_RELAY_MODEL", "").strip())
+    relay = bool(image_relay_model() or assistant_relay.chat_model())
     if relay and not image_relay_available():
         raise RuntimeError("阶段助手中转站尚未配置自动改图")
     with Image.open(source) as original:

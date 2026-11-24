@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import assistant_relay
+from assistant_relay import chat_model as relay_model
 import ui_revisions
 import ui_six_view
 from ui_agent_jobs import CHAT_TOOLS, _base_url, _safe_key, image_relay_available
@@ -22,21 +23,19 @@ QWEN_MODELS = {
 }
 
 
-def relay_model() -> str:
-    return os.environ.get("ASSISTANT_RELAY_MODEL", "").strip()
-
-
 def direct_models() -> dict[str, str]:
     model = relay_model()
     if model:
-        return {model: "GPT-5.6 Sol" if model == "gpt-5.6-sol" else model}
+        return {model: "GPT-5.6 Sol" if model == assistant_relay.DEFAULT_CHAT_MODEL else model}
     return QWEN_MODELS
 
 
 def available() -> bool:
     if relay_model():
-        return bool(os.environ.get("ASSISTANT_RELAY_BASE_URL") and os.environ.get("ASSISTANT_RELAY_API_KEY"))
-    return bool(os.environ.get("DASHSCOPE_API_KEY"))
+        return all(os.environ.get(name, "").strip() for name in (
+            "ASSISTANT_RELAY_BASE_URL", "ASSISTANT_RELAY_API_KEY",
+        ))
+    return bool(os.environ.get("DASHSCOPE_API_KEY", "").strip())
 
 STAGE_MODES = {
     "input": "输入图片与抠图",
@@ -130,10 +129,10 @@ def _qwen(payload: dict[str, object]) -> dict[str, object]:
 def _relay(
     model: str, turns: list[dict[str, object]], tools: list[dict[str, object]]
 ) -> dict[str, object]:
-    base_url = assistant_relay.base_url()
     key = os.environ.get("ASSISTANT_RELAY_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("阶段助手尚未配置中转站密钥")
+    if not key or not os.environ.get("ASSISTANT_RELAY_BASE_URL", "").strip():
+        raise RuntimeError("请先配置 ASSISTANT_RELAY_BASE_URL 和 ASSISTANT_RELAY_API_KEY，再重启 UI")
+    base_url = assistant_relay.base_url()
 
     messages = []
     for turn in turns[1:]:

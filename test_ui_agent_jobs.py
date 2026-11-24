@@ -31,6 +31,24 @@ class _Response:
         return self.payload if size < 0 else self.payload[:size]
 
 
+class DefaultAssistantTests(unittest.TestCase):
+    @mock.patch.dict("os.environ", {}, clear=True)
+    def test_unconfigured_and_stage_default_to_gpt(self) -> None:
+        self.assertEqual(ui_assistant.direct_models(), {"gpt-5.6-sol": "GPT-5.6 Sol"})
+        self.assertFalse(ui_assistant.available())
+        request = dict(run_dir=None, mode="stage", value="input", message="Test",
+                       history=[], dispatch=mock.Mock())
+        with self.assertRaisesRegex(RuntimeError, "ASSISTANT_RELAY_BASE_URL"):
+            ui_assistant.chat(**request)
+        with mock.patch.dict("os.environ", {
+            "ASSISTANT_RELAY_BASE_URL": "https://example.test/v1",
+            "ASSISTANT_RELAY_API_KEY": "test-key",
+        }), mock.patch.object(ui_assistant, "_relay", return_value={"content": "OK"}) as relay:
+            self.assertTrue(ui_assistant.available())
+            self.assertEqual(ui_assistant.chat(**request)["model"], "gpt-5.6-sol")
+            self.assertEqual(relay.call_args.args[0], "gpt-5.6-sol")
+
+
 @mock.patch.dict("os.environ", {"ASSISTANT_RELAY_MODEL": "", "ASSISTANT_IMAGE_RELAY_MODEL": ""})
 class AssistantTests(unittest.TestCase):
     def test_image_output_size_follows_api_rounding(self) -> None:

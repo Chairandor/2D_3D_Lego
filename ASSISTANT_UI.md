@@ -1,8 +1,10 @@
 # 流水线阶段助手（本机试用版）
 
-启动：在 `C:\path\2D_3D_Lego` 运行 `pipeline_ui.bat`，打开 `http://127.0.0.1:7865/`。启动 UI 的进程需能读取 `DASHSCOPE_API_KEY`；如果刚配置密钥，请在当前任务结束后重启 UI。助手使用百炼 API，不在本机下载对话或图像模型。
+在项目目录运行 `pipeline_ui.bat`，打开 `http://127.0.0.1:7865/`。阶段助手默认显示 GPT‑5.6 Sol，使用前在环境变量或本机的 `config.local.json` 中设置 `ASSISTANT_RELAY_BASE_URL` 和 `ASSISTANT_RELAY_API_KEY`，然后重启 UI。API 地址需使用 HTTPS，服务需支持 Responses API 和 `gpt-5.6-sol`。密钥只保存在本机配置或环境变量中。
 
-右侧「阶段助手」可按阶段或直接选择 Qwen 对话模型。输入、六视图阶段能根据文字要求调用千问图像编辑，生成独立 PNG 修改版；LEGO 阶段可请求输入检查、构建、重拼、稳定性分析、修复、渲染、说明书和零件目录推断。3D 几何与方位校正目前只提供讨论，不自动修改；这部分留给团队的 3D 编辑工具。
+右侧「阶段助手」可按阶段操作或直接与对话模型交流。要在 GPT 模式下自动修改透明底图或六视图，还需设置 `ASSISTANT_IMAGE_RELAY_MODEL` 和 `ASSISTANT_IMAGE_RELAY_API_KEY`，生成结果为独立的 PNG 修改版。LEGO 阶段可请求输入检查、构建、重拼、稳定性分析、修复、渲染、说明书和零件目录推断。3D 几何编辑由独立的 3D 修改助手处理。
+
+使用百炼时，在 `config.local.json` 中把 `ASSISTANT_RELAY_MODEL` 显式设为 `""`，并设置 `DASHSCOPE_API_KEY`。此模式提供 Qwen3.8 Max 和 Qwen3.8 Flash。将 `ASSISTANT_IMAGE_RELAY_MODEL` 也留空即可使用千问图像编辑。
 
 图片或 LEGO 的修改版不会覆盖原版。卡片上先点一版，再在蒙层中确认，才会记录选择。选择新的透明底图片会创建新运行分支，从输入阶段继续；选择六视图会创建分支，复用无色模型和远端 UniTEX 缓存进行投影。原分支的下游产物在新产物出来前仍可查看。LEGO 新构建输出留在独立任务目录；已有模型的重拼或修复作为候选比较。运行到下一验收点不会自动开始积木构建。
 

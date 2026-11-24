@@ -1797,7 +1797,7 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
 <button id="assistantLaunch" class="assistant-launch" onclick="toggleAssistant(true)">打开阶段助手</button>
 <aside id="assistantPanel" class="assistant-panel" hidden aria-label="阶段助手">
   <div class="assistant-head"><h2>阶段助手</h2><button onclick="toggleAssistant(false)" aria-label="收起助手">收起 ×</button></div>
-  <div id="chatHistory" class="chat-history"><div class="chat-line">选择阶段或对话模型，然后描述想检查或修改的内容。修改会先生成候选，原版不会覆盖。__ASSISTANT_IMAGE_HINT__</div></div>
+  <div id="chatHistory" class="chat-history"><div class="chat-line">选择阶段或对话模型，然后描述想检查或修改的内容。修改会先生成候选，原版不会覆盖。__ASSISTANT_HINT__</div></div>
   <div class="chat-compose"><textarea id="chatInput" placeholder="描述你想调整的地方……"></textarea>
     <div id="modelPicker" class="picker" role="menu" hidden>
       <div class="picker-title">按阶段 · 自动选择对话模型</div>
@@ -2109,14 +2109,16 @@ class Handler(BaseHTTPRequestHandler):
                 f'{html.escape(label)}</button>'
                 for model, label in models.items()
             )
-            image_hint = (
-                "当前可看图分析；需要自动改图时请先配置图像编辑模型。"
-                if ui_assistant.relay_model() and not ui_agent_jobs.image_relay_available() else ""
-            )
+            assistant_hint = ""
+            if ui_assistant.relay_model():
+                if not ui_assistant.available():
+                    assistant_hint = "使用阶段助手前，请配置 API 地址和密钥。"
+                elif not ui_agent_jobs.image_relay_available():
+                    assistant_hint = "当前可看图分析；需要自动改图时请先配置图像编辑模型。"
             body = (
                 HTML.replace("__DEFAULT_IMAGE__", html.escape(str(DEFAULT_IMAGE), quote=True))
                 .replace("__ASSISTANT_DEFAULT__", html.escape(next(iter(models.values()))))
-                .replace("__ASSISTANT_IMAGE_HINT__", image_hint)
+                .replace("__ASSISTANT_HINT__", assistant_hint)
                 .replace("__ASSISTANT_MODELS__", model_buttons)
                 .replace("__DEFAULT_MODE__", mode)
                 .encode("utf-8")

@@ -55,7 +55,7 @@ ssh -N -L 17865:127.0.0.1:7865 your-server
 
 浏览器打开 `http://127.0.0.1:17865/`。建模、着色、校正和 LEGO 求解都在服务器运行；这个连接只用于访问页面。
 
-助手需要在服务器 `.env` 中配置 `DASHSCOPE_API_KEY`，并执行 `chmod 600 .env`。不要把密钥提交到 Git 或直接写入启动命令。
+阶段助手默认使用 GPT‑5.6 Sol。在服务器的 `.env` 中设置 `ASSISTANT_RELAY_BASE_URL` 和 `ASSISTANT_RELAY_API_KEY`，并执行 `chmod 600 .env`。图像编辑和百炼选项见 [阶段助手说明](../ASSISTANT_UI.md)。
 
 `pyldraw3` 的包和生成颜色目录是两项独立资源。新账号没有原生颜色目录时，可用 LEGO 环境执行以下初始化；只读取现有 `LDConfig.ldr`，生成文件和配置全部放在项目 `.runtime/` 内，不改变调色板映射算法：
 
