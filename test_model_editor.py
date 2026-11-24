@@ -1,5 +1,7 @@
-import json
+from contextlib import closing
+from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
+import json
 from pathlib import Path
 import tempfile
 import threading
@@ -56,8 +58,12 @@ class ModelEditorTests(unittest.TestCase):
                 thread.start()
                 try:
                     url = f"http://127.0.0.1:{server.server_port}"
-                    with self.assertRaisesRegex(RuntimeError, "403"):
-                        model_edit_bridge.Client(url, "x" * 32).upload(original)
+                    with closing(HTTPConnection("127.0.0.1", server.server_port, timeout=5)) as conn:
+                        conn.request("POST", "/api/model-edit/bridge-open",
+                                     headers={"Authorization": "Bearer " + "x" * 32,
+                                              "Content-Length": "0"})
+                        with conn.getresponse() as denied:
+                            self.assertEqual(denied.status, 403)
                     self.assertFalse(server_sessions.sessions)
                     client = model_edit_bridge.Client(url, secret)
                     local = model_editing.Sessions(local_root, FakeEditor(), client)
