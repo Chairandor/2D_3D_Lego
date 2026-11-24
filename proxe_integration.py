@@ -251,16 +251,27 @@ def build_command(
     return _prox_shell(install, args, gpu)
 
 
-def validate_mesh(path: Path) -> dict[str, int | bool]:
-    """Validate a GLB after welding UV-split vertices by position."""
+def load_preview_meshes(path: Path):
+    """Load the drawable geometry without checking mesh topology."""
     import numpy as np
     import trimesh
 
     loaded = trimesh.load(path, process=False)
     meshes = list(loaded.geometry.values()) if isinstance(loaded, trimesh.Scene) else [loaded]
-    meshes = [mesh for mesh in meshes if isinstance(mesh, trimesh.Trimesh)]
+    meshes = [mesh for mesh in meshes if isinstance(mesh, trimesh.Trimesh) and len(mesh.faces)]
     if not meshes:
         raise ValueError("输出 GLB 中没有可用网格")
+    if any(not np.isfinite(mesh.vertices).all() for mesh in meshes):
+        raise ValueError("输出 GLB 含有无效顶点坐标")
+    return meshes
+
+
+def validate_mesh(path: Path, *, require_watertight: bool = True) -> dict[str, int | bool]:
+    """Validate a GLB after welding UV-split vertices by position."""
+    import numpy as np
+    import trimesh
+
+    meshes = load_preview_meshes(path)
     mesh = trimesh.util.concatenate(meshes)
     rounded = np.round(np.asarray(mesh.vertices), decimals=6)
     _, inverse = np.unique(rounded, axis=0, return_inverse=True)
@@ -270,6 +281,8 @@ def validate_mesh(path: Path) -> dict[str, int | bool]:
         & (faces[:, 1] != faces[:, 2])
         & (faces[:, 2] != faces[:, 0])
     ]
+    if not len(faces):
+        raise ValueError("输出 GLB 中没有可用三角面")
     edges = np.sort(
         np.concatenate((faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]])),
         axis=1,
@@ -282,7 +295,7 @@ def validate_mesh(path: Path) -> dict[str, int | bool]:
         "nonmanifold_edges": int(np.count_nonzero(counts > 2)),
     }
     metrics["watertight"] = not metrics["boundary_edges"] and not metrics["nonmanifold_edges"]
-    if not metrics["watertight"]:
+    if require_watertight and not metrics["watertight"]:
         raise ValueError(
             "最终网格验收未通过："
             f"边界边 {metrics['boundary_edges']}，非流形边 {metrics['nonmanifold_edges']}"

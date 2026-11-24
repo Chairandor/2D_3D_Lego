@@ -9,6 +9,8 @@ import json
 import mimetypes
 import os
 import re
+import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -20,6 +22,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from staged_lego import draft_folder, pending_preview, read_preview
+
 import ui_assistant
 import ui_agent_jobs
 import ui_revisions
@@ -29,6 +33,10 @@ import ui_lego_details
 import ui_instructions
 import ui_parts_pdf
 import ui_run_state
+import ui_result_folders
+import stage_console
+import model_edit_bridge
+import model_editing
 
 
 from project_config import load_project_config, venv_executable, terminate_process_tree
@@ -75,7 +83,10 @@ def display_form_values(run_dir: Path | None, image: Path | None) -> tuple[str, 
             source = recorded
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         pass
-    return (str(source) if source else "", str(main_dir))
+    imported = ui_result_folders.imported_from(main_dir)
+    if imported and source is None:
+        source = next((path for path in (main_dir / "source.png", main_dir / "input/source.png") if path.is_file()), None)
+    return (str(source) if source else "", imported or str(main_dir))
 
 
 def within_root(path: Path) -> bool:
@@ -86,18 +97,10 @@ def within_root(path: Path) -> bool:
         return False
 
 
-def downloadable_file(path: Path) -> bool:
-    """Model downloads must never expose the server's private configuration."""
-    if not path.is_file() or not within_root(path):
-        return False
-    relative = path.resolve().relative_to(ROOT.resolve())
-    if any(part.startswith(".") and part != ".ui-details" for part in relative.parts):
-        return False
-    return path.name not in {"config.local.json", "local.json"} and path.suffix.lower() not in {".pem", ".key"}
-
-
 def bundle_comparison(run_dir: Path, studs: int, original: Path) -> dict[str, object] | None:
     """Expose the newest usable bundle report without changing any model files."""
+    if not ui_result_folders.inside(original, run_dir):
+        return None
     prefix = f"lego-{studs}-bundle"
     bundle_dirs: list[tuple[int, Path]] = []
     for directory in run_dir.glob(f"{prefix}*"):
@@ -108,7 +111,7 @@ def bundle_comparison(run_dir: Path, studs: int, original: Path) -> dict[str, ob
             bundle_dirs.append((int(match.group(1) or 1), directory))
     for _, directory in sorted(bundle_dirs, reverse=True):
         report_path = directory / "comparison" / "report.json"
-        if not report_path.is_file():
+        if not ui_result_folders.inside(report_path, run_dir) or not report_path.is_file():
             continue
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -144,7 +147,7 @@ def bundle_comparison(run_dir: Path, studs: int, original: Path) -> dict[str, ob
                 continue
             key = f"{strategy}-s{seed}-{variant}"
             path = directory / "work" / "pending" / key / "model.ldr"
-            available = path.is_file()
+            available = bool(ui_result_folders.inside(path, directory) and ui_result_folders.inside(path, run_dir) and path.is_file())
             metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
             options.append(
                 {
@@ -171,64 +174,86 @@ def bundle_comparison(run_dir: Path, studs: int, original: Path) -> dict[str, ob
     return None
 
 
+ARTIFACT_DEFINITIONS = (
+    ("输入检查", "input/review.png", "image"),
+    ("透明底输入", "input/foreground.png", "image"),
+    ("几何轮廓检查", "hunyuan/qa/shape_qa_overlay.png", "image"),
+    ("Hunyuan 无色模型", "hunyuan/mesh_shape_review_clean.glb", "model"),
+    ("UniTEX 六视图", "unitex/mv_rgb.png", "image"),
+    ("UniTEX 彩色模型", "unitex/textured_mesh.glb", "model"),
+    ("方位校正模型", "oriented/mesh_upright.glb", "model"),
+    ("LEGO 输入网格", "oriented/lego_input.ply", "model"),
+)
+
+
+def artifact_version(item: dict, path: Path) -> dict:
+    stat = path.stat()
+    return {**item, "url": "/file?path=" + urllib.parse.quote(str(path)),
+            "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
 def artifact_inventory(run_dir: Path | None) -> list[dict[str, object]]:
     if run_dir is None:
         return []
-    definitions = (
-        ("输入检查", "input/review.png", "image"),
-        ("透明底输入", "input/foreground.png", "image"),
-        ("几何轮廓检查", "hunyuan/qa/shape_qa_overlay.png", "image"),
-        ("Hunyuan 无色模型", "hunyuan/mesh_shape_review_clean.glb", "model"),
-        ("UniTEX 六视图", "unitex/mv_rgb.png", "image"),
-        ("UniTEX 彩色模型", "unitex/textured_mesh.glb", "model"),
-        ("方位校正模型", "oriented/mesh_upright.glb", "model"),
-        ("LEGO 输入网格", "oriented/lego_input.ply", "model"),
-    )
     result = []
-    for label, relative, kind in definitions:
+    for label, relative, kind in ARTIFACT_DEFINITIONS:
         path = run_dir / relative
-        if path.is_file():
-            item = {
-                "label": label,
-                "relative": relative,
-                "kind": kind,
-                "size": path.stat().st_size,
-                "mtime_ns": path.stat().st_mtime_ns,
-                "url": "/file?path=" + urllib.parse.quote(str(path)),
-            }
+        if ui_result_folders.inside(path, run_dir) and path.is_file():
+            item = artifact_version({"label": label, "relative": relative, "kind": kind}, path)
             if kind == "model" and path.suffix.lower() in {".glb", ".ply"}:
                 item["preview_format"] = path.suffix.lower().removeprefix(".")
             result.append(item)
     ldraw_available = (LDRAW_ROOT / "parts").is_dir() and (LDRAW_ROOT / "LDConfig.ldr").is_file()
-    lego_models: list[tuple[int, Path]] = []
-    for path in run_dir.glob("lego-*/model.mpd"):
-        match = re.fullmatch(r"lego-(\d+)", path.parent.name)
-        if match:
-            lego_models.append((int(match.group(1)), path))
-    for studs, path in sorted(lego_models):
+    for model_id, path, name in model_editing.saved_models(run_dir):
+        result.append(artifact_version({"label": name, "kind": "model", "preview_format": "glb",
+                                        "relative": path.relative_to(run_dir).as_posix(), "model_id": model_id}, path))
+    lego_models = []
+    for model_id, build_run, name in [("", run_dir, ""), *model_editing.lego_runs(run_dir)]:
+        for folder in build_run.glob("lego-*"):
+            match = re.fullmatch(r"lego-(\d+)", folder.name)
+            if not match or not folder.resolve().is_relative_to(build_run.resolve()):
+                continue
+            state = read_preview(folder)
+            try:
+                path = (draft_folder(folder, state) / "preview.mpd"
+                        if state and state["state"] == "pending" else folder / "model.mpd")
+            except ValueError:
+                continue
+            if path.is_file() and path.resolve().is_relative_to(build_run.resolve()):
+                lego_models.append((model_id, int(match.group(1)), name, build_run, path, state))
+    for model_id, studs, name, build_run, path, state in sorted(lego_models):
         item = {
-            "label": f"LEGO 模型（{studs} studs）",
+            "label": f"{name} · LEGO（{studs} studs）" if name else f"LEGO 模型（{studs} studs）",
             "studs": studs,
-            "relative": path.relative_to(run_dir).as_posix(),
+            "relative": (build_run / f"lego-{studs}/model.mpd").relative_to(run_dir).as_posix(),
             "kind": "model",
             "size": path.stat().st_size,
             "mtime_ns": path.stat().st_mtime_ns,
             "url": "/file?path=" + urllib.parse.quote(str(path)),
         }
+        if model_id:
+            item["lego_model_id"] = model_id
         if ldraw_available:
             item["preview_format"] = "mpd"
-        comparison = bundle_comparison(run_dir, studs, path)
-        if comparison is not None:
+        if state:
+            item["lego_validation"] = state["state"]
+            item["brick_count"] = state["brick_count"]
+            item["floating"] = state.get("floating")
+            item["components"] = state.get("components")
+        comparison = None
+        if state is None or (state["state"] == "verified" and state.get("bundle")):
+            comparison = bundle_comparison(build_run, studs, path)
+        if comparison is not None and (state is None or comparison["report_mtime_ns"] >= path.stat().st_mtime_ns):
             item["comparison"] = {
                 "bundle": comparison["bundle"],
                 "report_mtime_ns": comparison["report_mtime_ns"],
             }
             item["comparison_url"] = "/compare?" + urllib.parse.urlencode(
-                {"run_dir": str(run_dir), "studs": studs}
+                {"run_dir": str(build_run), "studs": studs}
             )
         result.append(item)
     for path in sorted((run_dir / "ui_assistant" / "jobs").glob("*/bundle/model/model.mpd")):
-        if not path.is_file():
+        if not ui_result_folders.inside(path, run_dir) or not path.is_file():
             continue
         relative = path.relative_to(run_dir).as_posix()
         result.append({
@@ -242,7 +267,7 @@ def artifact_inventory(run_dir: Path | None) -> list[dict[str, object]]:
         })
     legacy = run_dir / "lego" / "model.mpd"
     lego_input = run_dir / "oriented" / "lego_input.ply"
-    if legacy.is_file() and (
+    if ui_result_folders.inside(legacy, run_dir) and legacy.is_file() and (
         not lego_input.is_file() or legacy.stat().st_mtime >= lego_input.stat().st_mtime
     ):
         item = {
@@ -259,11 +284,14 @@ def artifact_inventory(run_dir: Path | None) -> list[dict[str, object]]:
     return result
 
 
-def artifact_groups(run_dir: Path | None) -> list[dict[str, object]]:
+def artifact_groups(
+    run_dir: Path | None, *, folder: Path | None = None, old_folder: str = "",
+) -> list[dict[str, object]]:
     if run_dir is None:
         return []
-    parent = ui_revisions.branch_parent(run_dir, ROOT)
-    branch_stage = ui_revisions.branch_start_stage(run_dir, ROOT)
+    scope = folder or ROOT
+    parent = ui_revisions.branch_parent(run_dir, scope)
+    branch_stage = ui_revisions.branch_start_stage(run_dir, scope)
     stage_order = {"input": 0, "geometry": 1, "texture": 2, "orientation": 3, "lego": 4}
     def artifact_stage(relative: str) -> str:
         if relative.startswith("input/"):
@@ -280,17 +308,31 @@ def artifact_groups(run_dir: Path | None) -> list[dict[str, object]]:
         lineage: list[Path] = []
         current_parent: Path | None = parent
         seen: set[Path] = set()
-        while current_parent is not None and current_parent not in seen and len(lineage) < 32:
+        while current_parent is not None and current_parent not in seen:
             lineage.append(current_parent)
             seen.add(current_parent)
-            current_parent = ui_revisions.branch_parent(current_parent, ROOT)
+            current_parent = ui_revisions.branch_parent(current_parent, scope)
         for ancestor in reversed(lineage):
             old.update({item["relative"]: item for item in artifact_inventory(ancestor)})
     current = {item["relative"]: item for item in artifact_inventory(run_dir)}
+    explicitly_generated = stage_console.metadata(run_dir)
+    console = stage_console.Console(run_dir, None, ROOT) if folder is None else None
+    primary = {relative: (label, kind) for label, relative, kind in ARTIFACT_DEFINITIONS
+               if relative in stage_console.VERSIONED_OUTPUTS.values()}
     groups = []
-    for relative in dict.fromkeys([*old, *current]):
+    for relative in dict.fromkeys([*old, *current, *(primary if console else ())]):
         previous, latest = old.get(relative), current.get(relative)
-        record = ui_revisions.selected_pair(run_dir, relative, ROOT)
+        if relative.startswith(("model_edits/", "lego_sources/")):
+            groups.append({"relative": relative, "stage": "", "original": latest or previous,
+                           "candidate": None, "choice": None, "stale": False})
+            continue
+        if latest and latest.get("lego_validation"):
+            # The draft and the validated model occupy the same card, even
+            # if this run is an adopted image/texture branch.
+            groups.append({"relative": relative, "stage": "lego", "original": latest,
+                           "candidate": None, "choice": None, "stale": False})
+            continue
+        record = ui_revisions.selected_pair(run_dir, relative, scope, read_only=folder is not None, old_folder=old_folder)
         # Accepted inputs are copied into a branch at runtime. The local copy
         # is the selected version, not another pending candidate.
         accepted_branch_input = (
@@ -304,25 +346,27 @@ def artifact_groups(run_dir: Path | None) -> list[dict[str, object]]:
             branch_stage == "texture"
             and relative in {"oriented/mesh_upright.glb", "oriented/lego_input.ply"}
         )
-        skip_generated_pair = accepted_branch_input or auto_accepted_intermediate
+        historical = console and relative in primary and ui_revisions.selected_version(run_dir, relative, ROOT)
+        skip_generated_pair = historical or accepted_branch_input or auto_accepted_intermediate or relative in explicitly_generated
         if skip_generated_pair and latest and record and record.get("origin") == "generated":
             record = None
         if previous and latest and ui_revisions.stage_for(relative):
-            if not skip_generated_pair:
+            if folder is None and not skip_generated_pair:
                 record = ui_revisions.register_generated_pair(
                     run_dir, relative,
-                    ui_revisions.available_artifact(parent, relative, ROOT),
-                    run_dir / relative, ROOT,
+                    ui_revisions.available_artifact(parent, relative, scope),
+                    run_dir / relative, scope,
                 )
         if record:
             template = latest or previous
+            if template is None and relative in primary:
+                label, kind = primary[relative]
+                template = {"label": label, "kind": kind, "relative": relative}
+                if kind == "model":
+                    template["preview_format"] = "glb"
             assert template is not None
             def version_item(path_text: str) -> dict[str, object]:
-                path = Path(path_text)
-                item = dict(template)
-                item["url"] = "/file?path=" + urllib.parse.quote(str(path))
-                item["size"] = path.stat().st_size
-                item["mtime_ns"] = path.stat().st_mtime_ns
+                item = artifact_version(template, Path(path_text))
                 item.pop("comparison", None)
                 item.pop("comparison_url", None)
                 return item
@@ -333,22 +377,41 @@ def artifact_groups(run_dir: Path | None) -> list[dict[str, object]]:
                 "choice": record["choice"], "stale": False,
             })
         else:
+            active = console.asset(relative) if console and relative in primary else None
+            item = latest or previous
+            if active is not None:
+                label, kind = primary[relative]
+                item = artifact_version(item or {"label": label, "kind": kind, "relative": relative}, active.file)
+                if kind == "model":
+                    item["preview_format"] = "glb"
+            if item is None:
+                continue
             groups.append({
                 "relative": relative, "stage": ui_revisions.stage_for(relative),
-                "original": latest or previous, "candidate": None, "choice": None,
-                "stale": bool(previous and not latest and branch_stage is not None
+                "original": item, "candidate": None, "choice": None,
+                "stale": bool(not (active and active.selected_at) and previous and not latest and branch_stage is not None
                               and stage_order[artifact_stage(relative)] >= stage_order[branch_stage]),
             })
-    edit_state = proxe.read_state(run_dir)
-    edited = proxe.safe_run_file(run_dir, edit_state.get("latest_result"))
+    edit_state = (ui_result_folders.read_json(run_dir / proxe.STATE_NAME, scope)
+                  if folder is not None else proxe.read_state(run_dir))
+    def edit_file(value):
+        if folder is None:
+            return proxe.safe_run_file(run_dir, value)
+        path = ui_result_folders.recorded_path(value, scope, old_folder)
+        return path if path and ui_result_folders.downloadable(path, scope) else None
+
+    edited = edit_file(edit_state.get("latest_result"))
     history = edit_state.get("history")
     last_source = history[-1].get("source") if isinstance(history, list) and history and isinstance(history[-1], dict) else None
-    original_model = proxe.safe_run_file(run_dir, last_source) or proxe.original_model(run_dir)
-    if edited and original_model:
+    original_model = edit_file(last_source) or (proxe.original_model(run_dir) if folder is None else None)
+    if edited and original_model and original_model.is_relative_to(run_dir):
         relative = original_model.relative_to(run_dir).as_posix()
         for index, group in enumerate(groups):
             if group["relative"] != relative:
                 continue
+            chosen = console.asset(stage_console.COLOR) if console else None
+            if chosen and chosen.selected_at:
+                break
             original = group["original"]
             if original is None:
                 break
@@ -363,7 +426,7 @@ def artifact_groups(run_dir: Path | None) -> list[dict[str, object]]:
             groups[index] = {
                 "relative": relative, "stage": "orientation", "original": original,
                 "candidate": candidate, "choice": (
-                    "candidate" if edit_state.get("selected_model") == str(edited)
+                    "candidate" if edit_file(edit_state.get("selected_model")) == edited
                     else "original" if edit_state.get("status") == "original" else None
                 ),
                 "stale": False, "ai_edit": True,
@@ -372,10 +435,22 @@ def artifact_groups(run_dir: Path | None) -> list[dict[str, object]]:
     return groups
 
 
-def current_view(run_dir: Path | None, *, refresh: bool = False) -> dict:
+def current_view(
+    run_dir: Path | None, *, refresh: bool = False, folder: Path | None = None, kind: str = "image",
+) -> dict:
     """Normal card/progress reads use the saved manifest, not directory discovery."""
     if run_dir is None or not run_dir.is_dir():
         return {"artifact_groups": [], "pipeline_state": {}}
+    if kind == "3d":
+        return ui_result_folders.native_view(run_dir, (LDRAW_ROOT / "parts").is_dir())
+    if folder is not None:
+        saved = ui_run_state.load_view(run_dir, folder, read_only=True)
+        if saved is not None:
+            return saved
+        return {
+            "artifact_groups": artifact_groups(run_dir, folder=folder, old_folder=ui_result_folders.legacy_origin(folder)),
+            "pipeline_state": ui_result_folders.read_json(run_dir / "pipeline_state.json", folder),
+        }
     # Use the same lock as revision mutations so a snapshot cannot overwrite
     # a selection that arrived while generated outputs were being reconciled.
     with ui_revisions._STATE_THREAD_LOCK:
@@ -452,7 +527,7 @@ def build_command(
     if payload.get("accept_unitex"):
         command.append("--accept-unitex")
     if payload.get("build_lego"):
-        command.append("--build-lego")
+        command.extend(("--build-lego", "--staged-lego"))
         if selected := proxe.selected_lego_input(run_dir):
             command.extend(["--lego-input", str(selected)])
     if payload.get("bundle"):
@@ -484,7 +559,11 @@ class PipelineController:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.process: subprocess.Popen[str] | None = None
+        self.worker_active = False
+        self.verifying_studs: int | None = None
+        self.verifying_model_id = ""
         self.logs: deque[str] = deque(maxlen=2500)
+        self._opened_view: tuple[Path, Path, str] | None = None
         self.command: list[str] = []
         self.image: Path | None = DEFAULT_IMAGE if DEFAULT_IMAGE.is_file() else None
         self.run_dir: Path | None = (
@@ -502,26 +581,47 @@ class PipelineController:
 
     def is_running(self) -> bool:
         with self.lock:
-            return self.process is not None and self.process.poll() is None
+            return self.worker_active
+    def opened_view(self) -> tuple[Path, Path, str] | None:
+        selection = self._opened_view
+        return selection if selection and self.run_dir == selection[1] else None
+
     def load_run(self, run_dir: Path) -> None:
-        """Open a public run with its saved branch and artifact choices intact."""
-        run_dir = run_dir.resolve()
-        if not run_dir.is_dir() or not within_root(run_dir):
-            raise ValueError("运行目录必须是项目内已有的文件夹")
-        restored = ui_revisions.restore_active_run(run_dir, ROOT)
+        """Open the original folder and restore its saved branch and cards."""
+        run_dir, kind = ui_result_folders.resolve_folder(run_dir.resolve())
+        browse_only = kind == "3d"
         with self.lock:
-            if self.process is not None and self.process.poll() is None:
-                raise RuntimeError("流水线正在运行，不能切换运行目录")
-            ui_revisions.remember_active_run(restored, ROOT)
-            current_view(restored)
-            self.run_dir = restored
-            display_image, _ = display_form_values(restored, self.image)
-            if display_image and Path(display_image).is_file():
-                self.image = Path(display_image)
-            self.message = "已载入现有结果"
+            if self.worker_active:
+                raise RuntimeError("流水线正在运行，不能切换成果文件夹")
+            if kind == "image":
+                old_folder = ui_result_folders.legacy_origin(run_dir)
+                nested_project = any((parent / "pipeline_ui.py").is_file() for parent in run_dir.parents
+                                     if parent != ROOT and parent.is_relative_to(ROOT))
+                if not within_root(run_dir) or nested_project or (old_folder and Path(old_folder) != run_dir):
+                    run_dir = ui_result_folders.import_image_folder(run_dir, ROOT)
+            restored = run_dir
+            image = None
+            if kind == "image":
+                restored = ui_revisions.restore_active_run(run_dir, ROOT)
+                ui_revisions.remember_active_run(restored, ROOT)
+                current_view(restored)
+                display_image, _ = display_form_values(restored, None)
+                if display_image and Path(display_image).is_file():
+                    image = Path(display_image)
+            else:
+                current_view(restored, folder=run_dir, kind=kind)
+            self._opened_view = (run_dir, restored, kind) if browse_only else None
+            self.run_dir, self.image = restored, image
+            self.message = "已打开成果文件夹"
+            self.logs.clear()
+            self.returncode = None
+            self.started_at = None
+            self.pipeline_run_dir = restored if not browse_only else None
 
     def start(self, payload: dict[str, object]) -> None:
         with self.lock:
+            if self.opened_view() is not None:
+                raise ValueError("当前成果以只读方式打开。上传输入图片可开始新任务。")
             active_run_dir = self.run_dir
         imported = (active_run_dir is not None and
                     (active_run_dir / "pipeline_state.json").is_file() and
@@ -541,7 +641,7 @@ class PipelineController:
             run_dir = active_run_dir
             image = None
             command = [sys.executable, str(PIPELINE), "--from-textured", str(source),
-                       "--output-dir", str(run_dir), "--build-lego", "--target-studs", str(studs)]
+                       "--output-dir", str(run_dir), "--build-lego", "--staged-lego", "--target-studs", str(studs)]
             if selected := proxe.selected_lego_input(run_dir):
                 command.extend(["--lego-input", str(selected)])
             if payload.get("bundle"):
@@ -549,27 +649,158 @@ class PipelineController:
         else:
             command, image, run_dir = build_command(payload, active_run_dir=active_run_dir)
         with self.lock:
-            if self.process is not None and self.process.poll() is None:
-                raise RuntimeError("流水线正在运行，请等待或先停止当前任务")
-            self.logs.clear()
-            self.command = command
-            self.image = image
-            self.run_dir = run_dir
-            self.pipeline_run_dir = run_dir
+            self._require_idle()
             if run_dir.is_dir():
                 ui_revisions.remember_active_run(run_dir, ROOT)
-            self.returncode = None
-            self.message = "正在启动"
-            self.started_at = time.time()
-            self.stop_requested = False
-            self.last_output_at = self.started_at
-            self.lego_started_at = None
-            worker = threading.Thread(target=self._run, daemon=True)
-            worker.start()
+            self.image, self.run_dir = image, run_dir
+            self.pipeline_run_dir = run_dir
+            self._launch(command)
+
+    def start_stage(self, payload: dict[str, object]) -> None:
+        action = str(payload.get("action", ""))
+        if action not in stage_console.ACTIONS:
+            raise ValueError("无效的阶段操作")
+        with self.lock:
+            self._require_idle()
+            if self.opened_view() is not None:
+                raise ValueError("当前成果以只读方式打开")
+            text = str(payload.get("image_path", "")).strip()
+            image = Path(text).expanduser().resolve() if text else None
+            if image is not None and not image.is_file():
+                raise ValueError(f"找不到输入图片：{image}")
+            folder = str(payload.get("output_dir", "")).strip()
+            if folder:
+                public = ui_result_folders.parse_folder(folder)
+                if self.run_dir is not None:
+                    active = ui_revisions.root_run_dir(self.run_dir, ROOT)
+                    if ui_result_folders.imported_from(active) == str(public):
+                        public = active
+            elif image is not None:
+                public = default_run_dir(image).resolve()
+            elif self.run_dir is not None:
+                public = ui_revisions.root_run_dir(self.run_dir, ROOT)
+            else:
+                raise ValueError("请先上传图片或打开成果")
+            if not within_root(public):
+                raise ValueError("请在当前试验工作树下创建成果目录")
+            original, _ = display_form_values(public, None)
+            if original and image is not None and image != Path(original):
+                raise ValueError(f"此成果使用的原图是 {original}。更换原图时请指定新成果文件夹。")
+            image = image or (Path(original) if original else None)
+            run_dir = ui_revisions.restore_active_run(public, ROOT) if public.is_dir() else public
+            model_id = str(payload.get("model_id", "")) if action == "lego" else ""
+            lego_run = None
+            if model_id:
+                model, name = model_editing.saved_model(public, model_id)
+                inputs = {"glb": model}
+                lego_run = model_editing.variant_dir(public, model_id, "lego_sources")
+                lego_run.mkdir(parents=True, exist_ok=True)
+                stage_console.atomic_json(lego_run / "source.json", {"name": name})
+            else:
+                inputs = stage_console.Console(run_dir, image, ROOT).inputs(action)
+            projection = str(payload.get("projection", "ltm"))
+            if projection not in {"ltm", "direct"}:
+                raise ValueError("无效的 UniTEX 投影方式")
+            studs = 24
+            if action == "lego":
+                studs = int(str(payload.get("studs", 24)))
+                if not 8 <= studs <= 128:
+                    raise ValueError("LEGO 宽度必须在 8–128 Stud")
+            if action in stage_console.VERSIONED_OUTPUTS:
+                products = [stage_console.VERSIONED_OUTPUTS[action]]
+                if action == "texture":
+                    products.extend([stage_console.UPRIGHT, stage_console.PLY])
+                if action == "geometry" and inputs[stage_console.FOREGROUND] == image:
+                    products.append(stage_console.FOREGROUND)
+                if any((run_dir / relative).is_file() for relative in products):
+                    run_dir = ui_revisions.create_generation_branch(run_dir)
+            work = run_dir / ".stage-work" / secrets.token_hex(12)
+            work.mkdir(parents=True)
+            plan = work / "plan.json"
+            stage_console.atomic_json(plan, {
+                "run": str(run_dir), "action": action, "image": str(image) if image else "",
+                "inputs": {key: str(value) for key, value in inputs.items()},
+                "input_versions": {key: stage_console.identity(value) for key, value in inputs.items()
+                                   if key != "cache_run"},
+                "projection": projection, "studs": studs, "bundle": bool(payload.get("bundle")),
+                "allow_cache_rebuild": bool(ui_result_folders.imported_from(public)),
+                "lego_run": str(lego_run) if lego_run else "",
+            })
+            ui_revisions.remember_active_run(run_dir, ROOT)
+            self.image, self.run_dir = image, run_dir
+            self.pipeline_run_dir = run_dir
+            self._launch([sys.executable, str(ROOT / "stage_console_worker.py"), str(plan)])
+
+    def _require_revision_idle(self, run_dir: Path) -> None:
+        self._require_idle()
+        if AI_EDITOR.is_running():
+            raise RuntimeError("3D 编辑正在运行，暂时不能切换版本")
+        job = ASSISTANT_JOBS.status() or {}
+        if job.get("run_dir") == str(run_dir) and job.get("state") in {"queued", "running"}:
+            raise RuntimeError("阶段助手正在处理此成果，暂时不能切换版本")
+        if self.opened_view() is not None or run_dir != self.run_dir or not run_dir.is_dir():
+            raise ValueError("成果文件夹已切换，请刷新后重新选择")
+
+    def upload_revision(self, run_dir: Path, relative: str, filename: str, content: bytes) -> dict:
+        with self.lock:
+            self._require_revision_idle(run_dir)
+            result = ui_revisions.add_candidate(run_dir, relative, filename, content, ROOT, adopt=True)
+            self.message = "已采用上传版本"
+            return result
+
+    def load_stage_version(self, run_dir: Path, relative: str, value: str) -> Path:
+        with self.lock:
+            self._require_revision_idle(run_dir)
+            path = Path(value).resolve()
+            record = stage_console.history(run_dir, ROOT).get(relative, {}).get(path)
+            if record is None:
+                raise ValueError("找不到该阶段的历史版本，请刷新后重新选择")
+            ui_revisions.select_version(run_dir, relative, path, record["owner"])
+            self.message = "已加载历史版本"
+            return path
+
+    def verify_lego(self, run_dir: Path, studs: int, model_id: str = "") -> None:
+        with self.lock:
+            self._require_idle()
+            if self.opened_view() is not None or self.run_dir != run_dir or not within_root(run_dir):
+                raise ValueError("请先打开这个试验版中的成果文件夹")
+            if not 8 <= studs <= 128:
+                raise ValueError("无效的 Stud 宽度")
+            build_run = (model_editing.variant_dir(ui_revisions.root_run_dir(run_dir, ROOT), model_id, "lego_sources")
+                         if model_id else run_dir)
+            folder = build_run / f"lego-{studs}"
+            if not folder.resolve().is_relative_to(build_run.resolve()):
+                raise ValueError("LEGO 预览目录不在当前成果内")
+            pending_preview(folder)
+            visible_image, _ = display_form_values(run_dir, self.image)
+            console = stage_console.Console(run_dir, Path(visible_image) if visible_image else None, ROOT)
+            if not model_id and console.outdated(f"lego-{studs}/model.mpd", {}):
+                raise ValueError("这张预览使用了旧模型，请先按当前模型生成 LEGO")
+            self._launch([sys.executable, str(PIPELINE), "--output-dir", str(build_run),
+                          "--verify-lego", str(studs)], verifying_studs=studs, verifying_model_id=model_id)
+
+    def _require_idle(self) -> None:
+        if self.worker_active:
+            raise RuntimeError("已有任务运行，请等待或先停止当前任务")
+
+    def _launch(self, command: list[str], verifying_studs: int | None = None, verifying_model_id: str = "") -> None:
+        """Called with the controller lock held."""
+        self.logs.clear()
+        self.command = command
+        self.returncode = None
+        self.message = "正在启动"
+        self.started_at = time.time()
+        self.stop_requested = False
+        self.last_output_at = self.started_at
+        self.lego_started_at = None
+        self.verifying_studs = verifying_studs
+        self.verifying_model_id = verifying_model_id
+        self.worker_active = True
+        threading.Thread(target=self._run, daemon=True).start()
 
     def set_uploaded_image(self, image: Path, output_dir: Path) -> None:
         with self.lock:
-            if self.process is not None and self.process.poll() is None:
+            if self.worker_active:
                 raise RuntimeError("流水线正在运行，暂时不能切换输入图片")
             self.image = image
             self.run_dir = output_dir
@@ -601,7 +832,7 @@ class PipelineController:
 
     def import_model(self, name: str, raw: bytes) -> tuple[Path, Path]:
         with self.lock:
-            if self.process is not None and self.process.poll() is None:
+            if self.worker_active:
                 raise RuntimeError("主流水线正在运行，暂时不能切换模型")
         if Path(name).suffix.lower() != ".glb":
             raise ValueError("目前只支持上传 .glb 3D 模型")
@@ -636,7 +867,7 @@ class PipelineController:
 
     def select_generated_model(self) -> Path:
         with self.lock:
-            if self.process is not None and self.process.poll() is None:
+            if self.worker_active:
                 raise RuntimeError("主流水线正在运行，暂时不能切换模型")
             run_dir = self.pipeline_run_dir
         model = proxe.current_model(run_dir)
@@ -650,6 +881,7 @@ class PipelineController:
     def _run(self) -> None:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
         try:
             process = subprocess.Popen(
                 self.command,
@@ -674,12 +906,14 @@ class PipelineController:
                 with self.lock:
                     self.logs.append(line.rstrip())
                     self.last_output_at = time.time()
-                    if "[5/5] legolization build" in line:
+                    if "[5/5] legolization " in line:
                         self.lego_started_at = self.last_output_at
             code = process.wait()
             if self.run_dir is not None and self.run_dir.is_dir():
                 current_view(self.run_dir, refresh=True)
             with self.lock:
+                verification = self.verifying_studs is not None
+                preview = any("LEGO 预览已生成" in line for line in self.logs)
                 self.returncode = code
                 self.message = (
                     "已停止"
@@ -692,11 +926,17 @@ class PipelineController:
                     if code == 3
                     else "LEGO 精确求解超出限制"
                     if code == 4
+                    else "LEGO 验证完成"
+                    if code == 0 and verification
+                    else "排砖预览已生成，等待验证"
+                    if code == 0 and preview
                     else "运行完成"
                     if code == 0
                     else f"运行失败（退出码 {code}）"
                 )
                 self.process = None
+                self.worker_active = False
+                self.verifying_studs = None
                 self.stop_requested = False
         except Exception as exc:  # noqa: BLE001
             with self.lock:
@@ -704,6 +944,8 @@ class PipelineController:
                 self.returncode = -1
                 self.message = "启动失败"
                 self.process = None
+                self.worker_active = False
+                self.verifying_studs = None
                 self.stop_requested = False
 
     @staticmethod
@@ -725,7 +967,7 @@ class PipelineController:
 
     def activate_branch(self, branch: Path, image: Path) -> None:
         with self.lock:
-            if self.process is not None and self.process.poll() is None:
+            if self.worker_active:
                 raise RuntimeError("流水线正在运行，不能切换到修改版")
             ui_revisions.remember_active_run(branch, ROOT)
             current_view(branch)
@@ -738,8 +980,9 @@ class PipelineController:
 
     def status(self) -> dict[str, object]:
         with self.lock:
-            running = self.process is not None and self.process.poll() is None
+            running = self.worker_active
             run_dir = self.run_dir
+            opened = self.opened_view()
             now = time.time()
             logs_text = "\n".join(self.logs)
             notices: list[dict[str, str]] = []
@@ -787,6 +1030,8 @@ class PipelineController:
                 )
             data = {
                 "running": running,
+                "verifying_studs": self.verifying_studs,
+                "verifying_model_id": self.verifying_model_id,
                 "message": self.message,
                 "returncode": self.returncode,
                 "logs": logs_text,
@@ -796,11 +1041,23 @@ class PipelineController:
                 "elapsed": round(time.time() - self.started_at, 1) if self.started_at else 0,
                 "notices": notices,
             }
-        display_image, display_dir = display_form_values(run_dir, self.image)
+        folder, _, kind = opened if opened else (None, None, "image")
+        if folder is not None:
+            display_image, display_dir = str(self.image or ""), str(folder)
+            data["notices"].append({"level": "info", "text": "当前仅预览已有成果。上传输入图片可开始新任务。"})
+        else:
+            display_image, display_dir = display_form_values(run_dir, self.image)
+            if run_dir is not None and display_dir and not display_image and not within_root(Path(display_dir)):
+                data["notices"].append({"level": "info", "text": "成果未包含原始图片。可以从已保存的透明底图继续；重新抠图需要填写原始图片路径。"})
+        data["read_only_run"] = opened is not None
         data["display_image"] = display_image
         data["display_output_dir"] = display_dir
+        data["saved_models"] = [] if opened or run_dir is None else [
+            {"id": model_id, "name": name} for model_id, _, name in
+            model_editing.saved_models(ui_revisions.root_run_dir(run_dir, ROOT))
+        ]
         try:
-            view = current_view(run_dir, refresh=running)
+            view = current_view(run_dir, refresh=running, folder=folder, kind=kind)
             data["artifact_groups"] = view["artifact_groups"]
             data["artifacts"] = [group["candidate"] if group.get("choice") == "candidate" else group["original"]
                                  for group in view["artifact_groups"]]
@@ -808,8 +1065,29 @@ class PipelineController:
         except (OSError, ValueError, KeyError) as exc:
             data["artifact_groups"], data["artifacts"], data["pipeline_state"] = [], [], {}
             data["notices"].append({"level": "error", "text": str(exc)})
-        data["assistant_available"] = bool(os.environ.get("DASHSCOPE_API_KEY"))
-        data["lego_recommendation"] = self.lego_recommendation(run_dir, running)
+        if not opened and run_dir is not None:
+            console = stage_console.Console(run_dir, Path(display_image) if display_image else None, ROOT)
+            data["stage_blocked"] = console.buttons()
+            for group in data["artifact_groups"]:
+                try:
+                    group["stale"] = group["stale"] or console.outdated(group["relative"], group)
+                except (OSError, ValueError):
+                    group["stale"] = True
+            if run_dir.is_dir() and not running:
+                try:
+                    data["stage_versions"] = {}
+                    for relative, versions in stage_console.history(run_dir, ROOT).items():
+                        active = console.asset(relative)
+                        data["stage_versions"][relative] = [
+                            {"path": str(path), "origin": item["origin"], "active": bool(active and active.file == path)}
+                            for path, item in sorted(versions.items(), key=lambda item: item[0].stat().st_mtime_ns, reverse=True)
+                        ]
+                except (OSError, ValueError) as exc:
+                    data["notices"].append({"level": "error", "text": str(exc)})
+        else:
+            data["stage_blocked"] = {action: "先打开可编辑的成果或上传图片" for action in stage_console.ACTIONS}
+        data["assistant_available"] = ui_assistant.available()
+        data["lego_recommendation"] = self.lego_recommendation(None if opened else run_dir, running)
         return data
 
     def lego_recommendation(
@@ -819,7 +1097,13 @@ class PipelineController:
     ) -> dict[str, object]:
         if run_dir is None:
             return {"status": "unavailable"}
-        mesh = proxe.selected_lego_input(run_dir) or run_dir / "oriented" / "lego_input.ply"
+        display_image, _ = display_form_values(run_dir, self.image)
+        try:
+            mesh = stage_console.Console(run_dir, Path(display_image) if display_image else None, ROOT).inputs("lego").get("ply")
+        except (OSError, ValueError):
+            return {"status": "unavailable"}
+        if mesh is None:
+            return {"status": "unavailable"}
         cache = run_dir / "oriented" / "lego_recommendation.json"
         if not mesh.is_file():
             return {"status": "unavailable"}
@@ -909,10 +1193,11 @@ class AIEditController:
         with self.lock:
             return self.active
 
-    def start(self, run_dir: Path | None, payload: dict[str, object]) -> None:
+    def start(self, run_dir: Path | None, payload: dict[str, object], *, source: Path | None = None,
+              prepare_lego: bool = True) -> None:
         if run_dir is None or not run_dir.is_dir():
             raise ValueError("请先运行流水线并生成 3D 模型")
-        source = proxe.current_model(run_dir)
+        source = source or proxe.current_model(run_dir)
         if source is None:
             raise ValueError("请先完成贴图与朝向校正，再进行 AI 编辑")
         instruction = str(payload.get("instruction", "")).strip()
@@ -959,7 +1244,7 @@ class AIEditController:
             self.active = True
         threading.Thread(
             target=self._run,
-            args=(edit_folder, source, instruction, category, gpu),
+            args=(edit_folder, source, instruction, category, gpu, prepare_lego),
             daemon=True,
         ).start()
 
@@ -1043,7 +1328,7 @@ class AIEditController:
 
     def _run(
         self, edit_folder: Path, source: Path, instruction: str,
-        category_override: str, gpu: int,
+        category_override: str, gpu: int, prepare_lego: bool = True,
     ) -> None:
         try:
             plan_path = edit_folder / "edit_plan.json"
@@ -1084,7 +1369,23 @@ class AIEditController:
             output = proxe.find_output(edit_folder)
             if output is None:
                 raise RuntimeError("Prox-E 已结束，但没有找到可用的 GLB")
-            if route != "proxy_addition" and plan.get("preserve_existing_texture"):
+            preserve_texture = bool(plan.get("preserve_existing_texture"))
+            if not prepare_lego:
+                proxe.load_preview_meshes(output)
+                with self.lock:
+                    if self.stop_requested:
+                        raise RuntimeError("编辑已停止")
+                    proxe.write_state(edit_folder.parent.parent, {
+                        "status": "review", "latest_result": str(output),
+                        "latest_edit": {
+                            "source": str(source), "route": route,
+                            "preserve_existing_texture": preserve_texture,
+                        },
+                    })
+                    self.returncode = 0
+                    self.message = "修改完成，可以预览或另存"
+                return
+            if route != "proxy_addition" and preserve_texture:
                 with self.lock:
                     self.logs.append("保留外观：校准生成贴图的整体亮度和饱和度")
                 preserved_output = output.with_name("output_preserved.glb")
@@ -1099,7 +1400,7 @@ class AIEditController:
             quality = proxe.validate_mesh(output)
             if route == "proxy_addition":
                 preservation = proxe.validate_exact_source_preservation(source, output)
-            elif plan.get("preserve_existing_texture"):
+            elif preserve_texture:
                 preservation = proxe.validate_appearance_preservation(source, output)
             else:
                 preservation = {"appearance_change_requested": True}
@@ -1118,8 +1419,9 @@ class AIEditController:
                 )
                 if route == "proxy_addition":
                     self.logs.append("原模型几何、UV 和贴图像素完全一致")
-                elif plan.get("preserve_existing_texture"):
+                elif preserve_texture:
                     self.logs.append("生成网格未改动，贴图亮度与饱和度验收通过")
+            with self.lock:
                 self.logs.append("阶段 5/5：生成 LEGO 输入")
             output_strategy = route
             lego_input = edit_folder / "lego_input.ply"
@@ -1297,6 +1599,7 @@ class AIEditController:
 
 CONTROLLER = PipelineController()
 AI_EDITOR = AIEditController()
+MODEL_EDITS = model_editing.Sessions(ROOT, AI_EDITOR, model_edit_bridge.Client.from_environment())
 ASSISTANT_JOBS = ui_agent_jobs.AgentJobManager(ROOT, Path(os.environ.get("LEGO_CLI", str(venv_executable(LEGO_ROOT / ".venv", "legolization")))), LEGO_ROOT, LDRAW_ROOT)
 
 
@@ -1304,7 +1607,7 @@ HTML = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>2D → 3D → LEGO</title>
+<title>2D → 3D → LEGO · 控制台试验版</title>
 <style>
 :root{--bg:#f4f1e8;--panel:#fffdf7;--ink:#23251f;--muted:#6d7166;--line:#d9d4c7;--yellow:#f2c94c;--red:#c84b3a;--green:#397a58;--blue:#345995}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#ece8dc,#f8f6ef 55%,#e7ecdf);color:var(--ink);font-family:"Segoe UI","Microsoft YaHei",sans-serif}
@@ -1313,48 +1616,86 @@ HTML = r"""<!doctype html>
 label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=text],input[type=number],select{width:100%;border:1px solid #cfc9bb;background:white;border-radius:10px;padding:10px 11px;font:inherit}.fileline{display:flex;gap:8px}.fileline input{min-width:0}.fileline button{white-space:nowrap}
 .checks{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:15px 0}.check{display:flex;gap:8px;align-items:flex-start;background:#f3f0e7;border:1px solid #dfd9ca;border-radius:10px;padding:9px;font-size:13px}.check input{margin-top:2px}
 .actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:15px}button{border:0;border-radius:11px;padding:11px 14px;font:inherit;font-weight:750;cursor:pointer;background:#e6e1d4;color:var(--ink)}button.primary{background:var(--yellow)}button.danger{background:#f3d4cf;color:#852c20}button:hover{filter:brightness(.97)}button:disabled{opacity:.5;cursor:not-allowed}
-.hint{color:var(--muted);font-size:12px;line-height:1.55}.recommendation{margin-top:8px;padding:10px 11px;border:1px solid #cbd8c7;border-radius:10px;background:#edf5e9;color:#31593d;font-size:13px;line-height:1.45}.recommendation button{padding:5px 9px;margin-left:7px;background:#d5e8cf}.steps{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:7px;margin-bottom:16px}.step{font-size:12px;padding:9px 7px;border-radius:9px;text-align:center;background:#ece8dd;color:#73766c}.step.active{background:#dfeade;color:#285a3f;font-weight:750}.step.wait{background:#f4e5b2;color:#755b00;font-weight:750}.step.skipped{background:#e8e8e3;color:#777}.step-action{width:100%;border:1px solid #aec7ad;cursor:pointer;line-height:1.3}.step-action:hover{background:#dcebd9}.notices{display:grid;gap:8px;margin:10px 0}.notice{border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.5}.notice.warning{background:#fff1c7;color:#715300;border:1px solid #e2c56c}.notice.error{background:#f7d7d2;color:#842f23;border:1px solid #dc9d94}
+.hint{color:var(--muted);font-size:12px;line-height:1.55}.recommendation{margin-top:8px;padding:10px 11px;border:1px solid #cbd8c7;border-radius:10px;background:#edf5e9;color:#31593d;font-size:13px;line-height:1.45}.recommendation button{padding:5px 9px;margin-left:7px;background:#d5e8cf}.steps{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px;margin-bottom:16px}.step{font-size:12px;padding:9px 7px;border-radius:9px;text-align:center;background:#ece8dd;color:#73766c}.step.active{background:#dfeade;color:#285a3f;font-weight:750}.step.wait{background:#f4e5b2;color:#755b00;font-weight:750}.notices{display:grid;gap:8px;margin:10px 0}.notice{border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.5}.notice.warning{background:#fff1c7;color:#715300;border:1px solid #e2c56c}.notice.error{background:#f7d7d2;color:#842f23;border:1px solid #dc9d94}
 .log{height:310px;overflow:auto;white-space:pre-wrap;background:#20231f;color:#dce8d5;border-radius:13px;padding:14px;font:12px/1.5 Consolas,monospace}.meta{display:flex;flex-wrap:wrap;gap:8px;color:var(--muted);font-size:12px;margin:10px 0}.meta span{background:#f0ede5;padding:5px 8px;border-radius:7px}.artifacts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}.artifact{border:1px solid var(--line);border-radius:13px;overflow:hidden;background:white}.artifact img{display:block;width:100%;height:190px;object-fit:contain;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px}.model-preview{height:190px;display:flex;align-items:center;justify-content:center;padding:8px;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px;color:#5e625a;font-size:12px;text-align:center;touch-action:none}.model-preview canvas{display:block;width:100%;height:100%;cursor:grab}.model-preview canvas:active{cursor:grabbing}.artifact .info{padding:10px;display:flex;flex-direction:column;align-items:flex-start;gap:4px}.artifact b{display:block;font-size:13px}.artifact a{font-size:12px;color:var(--blue);text-decoration:none}.empty{color:var(--muted);padding:35px 10px;text-align:center;border:1px dashed var(--line);border-radius:12px}
 .model-preview{position:relative}.preview-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;background:#ffffffb8}.model-preview-missing{height:190px;display:flex;align-items:center;justify-content:center;padding:8px;background:repeating-conic-gradient(#eee 0 25%,#ddd 0 50%) 50%/20px 20px;color:#5e625a;font-size:12px;text-align:center}.artifact .credit{display:block;color:var(--muted);font-size:10px;margin-top:4px}
 .artifact-disclosure{grid-column:1/-1;border-top:1px solid var(--line);padding-top:10px}.artifact-disclosure summary{display:inline-flex;align-items:center;gap:7px;cursor:pointer;color:var(--blue);font-size:13px;font-weight:700;list-style:none}.artifact-disclosure summary::-webkit-details-marker{display:none}.artifact-disclosure summary::after{content:"⌄";font-size:17px;line-height:1;transition:transform .2s}.artifact-disclosure[open] summary::after{transform:rotate(180deg)}.artifact-disclosure .artifacts{margin-top:12px}
-.artifact .title-link{display:block;color:var(--blue);font-size:13px;font-weight:700;text-decoration:underline;text-underline-offset:2px}
-.assistant-launch{position:fixed;right:18px;bottom:18px;z-index:20;background:#293b38;color:white;box-shadow:0 8px 28px #0003}.assistant-panel{position:fixed;right:0;top:0;bottom:0;width:390px;max-width:100vw;z-index:30;background:#fbfaf6;border-left:1px solid var(--line);box-shadow:-12px 0 35px #0002;display:flex;flex-direction:column}.assistant-panel[hidden],.assistant-launch[hidden],.picker[hidden]{display:none}.assistant-head{display:flex;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid var(--line)}.assistant-head h2{margin:0;font-size:17px}.assistant-head button{padding:7px 10px}.chat-history{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:10px}.chat-line{max-width:95%;padding:10px 12px;border-radius:12px;background:#ece9df;white-space:pre-wrap;line-height:1.5;font-size:13px}.chat-line.user{align-self:flex-end;background:#dceadc}.chat-compose{position:relative;border-top:1px solid var(--line);padding:12px}.chat-compose textarea{width:100%;min-height:78px;resize:vertical;border:1px solid var(--line);border-radius:11px;padding:10px;font:inherit}.chat-actions{display:flex;gap:8px;justify-content:space-between;margin-top:7px}.chat-actions button{font-size:12px;padding:8px 11px}.picker{position:absolute;left:12px;right:12px;bottom:115px;max-height:min(65vh,500px);overflow:auto;background:#292a29;color:#f7f7f5;border:1px solid #555;border-radius:15px;box-shadow:0 12px 30px #0005;padding:10px;z-index:2}.picker-title{font-size:12px;color:#aaa;padding:8px 10px 4px}.picker-option{display:flex;justify-content:space-between;align-items:center;width:100%;text-align:left;color:inherit;background:transparent;font-weight:500;padding:10px;border-radius:8px}.picker-option:hover,.picker-option[aria-checked=true]{background:#414541}.picker-option[aria-checked=true]::after{content:'✓'}.picker-divider{height:1px;background:#555;margin:8px 4px}.artifact-pair{grid-column:span 2;border:2px solid #b3c8b2;border-radius:16px;padding:10px;background:#edf4eb}.artifact-pair .pair-title{font-size:12px;color:#42644d;font-weight:750;margin:0 0 8px}.pair-cards{display:grid;grid-template-columns:1fr 1fr;gap:10px}.artifact.choice-card{cursor:pointer;border-color:#aec3ae}.artifact.choice-card:hover{box-shadow:0 0 0 2px #a8c6a7}.version-tag{display:inline-block;font-size:11px;color:#42644d;background:#e5f1e1;border-radius:6px;padding:3px 6px;margin-bottom:5px}.stale-tag{color:#765f21;background:#fff0bf}.choice-confirm{display:flex;gap:6px;align-items:center;margin-top:8px;font-size:12px;flex-wrap:wrap}.choice-confirm button{padding:5px 9px;font-size:12px}.artifact-actions{display:flex;align-items:center;flex-wrap:wrap;width:100%;min-width:0;gap:5px}.artifact-actions>a{white-space:nowrap}.artifact .upload-revision{flex:none;margin-left:auto;padding:3px 5px;font-size:10px;line-height:1.1;border-radius:6px;background:#e9e6db;white-space:nowrap}.assistant-open .shell{margin-right:390px;max-width:none}.assistant-open .grid{grid-template-columns:minmax(240px,300px) minmax(0,1fr)}
+.artifact [data-verify-lego]{padding:6px 9px;font-size:12px}.artifact .is-verified:disabled{opacity:1;background:#e0e1e3;color:#4b5056;filter:none}.artifact .title-link{display:block;color:var(--blue);font-size:13px;font-weight:700;text-decoration:underline;text-underline-offset:2px}
+.assistant-launch{position:fixed;right:18px;bottom:18px;z-index:20;background:#293b38;color:white;box-shadow:0 8px 28px #0003}.assistant-panel{position:fixed;right:0;top:0;bottom:0;width:390px;max-width:100vw;z-index:30;background:#fbfaf6;border-left:1px solid var(--line);box-shadow:-12px 0 35px #0002;display:flex;flex-direction:column}.assistant-panel[hidden],.assistant-launch[hidden],.picker[hidden]{display:none}.assistant-head{display:flex;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid var(--line)}.assistant-head h2{margin:0;font-size:17px}.assistant-head button{padding:7px 10px}.chat-history{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:10px}.chat-line{max-width:95%;padding:10px 12px;border-radius:12px;background:#ece9df;white-space:pre-wrap;line-height:1.5;font-size:13px}.chat-line.user{align-self:flex-end;background:#dceadc}.chat-compose{position:relative;border-top:1px solid var(--line);padding:12px}.chat-compose textarea{width:100%;min-height:78px;resize:vertical;border:1px solid var(--line);border-radius:11px;padding:10px;font:inherit}.chat-actions{display:flex;gap:8px;justify-content:space-between;margin-top:7px}.chat-actions button{font-size:12px;padding:8px 11px}.picker{position:absolute;left:12px;right:12px;bottom:115px;max-height:min(65vh,500px);overflow:auto;background:#292a29;color:#f7f7f5;border:1px solid #555;border-radius:15px;box-shadow:0 12px 30px #0005;padding:10px;z-index:2}.picker-title{font-size:12px;color:#aaa;padding:8px 10px 4px}.picker-option{display:flex;justify-content:space-between;align-items:center;width:100%;text-align:left;color:inherit;background:transparent;font-weight:500;padding:10px;border-radius:8px}.picker-option:hover,.picker-option[aria-checked=true]{background:#414541}.picker-option[aria-checked=true]::after{content:'✓'}.picker-divider{height:1px;background:#555;margin:8px 4px}.artifact-pair{grid-column:span 2;border:2px solid #b3c8b2;border-radius:16px;padding:10px;background:#edf4eb}.artifact-pair .pair-title{font-size:12px;color:#42644d;font-weight:750;margin:0 0 8px}.pair-cards{display:grid;grid-template-columns:1fr 1fr;gap:10px}.artifact.choice-card{cursor:pointer;border-color:#aec3ae}.artifact.choice-card:hover{box-shadow:0 0 0 2px #a8c6a7}.version-tag{display:inline-block;font-size:11px;color:#42644d;background:#e5f1e1;border-radius:6px;padding:3px 6px;margin-bottom:5px}.stale-tag{color:#765f21;background:#fff0bf}.choice-confirm{display:flex;gap:6px;align-items:center;margin-top:8px;font-size:12px;flex-wrap:wrap}.choice-confirm button{padding:5px 9px;font-size:12px}.artifact-actions{display:flex;align-items:center;flex-wrap:wrap;width:100%;min-width:0;gap:5px}.artifact-actions>a{white-space:nowrap}.artifact .upload-revision{flex:none;margin-left:auto;padding:3px 5px;font-size:10px;line-height:1.1;border-radius:6px;background:#e9e6db;white-space:nowrap}.assistant-open .shell{margin-right:390px;max-width:none}
 .artifact-actions{justify-content:space-between}.artifact .upload-revision{margin-left:0}
 .artifact.choice-card{position:relative}.choice-confirm{position:absolute;inset:0;z-index:5;margin:0;padding:16px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;border-radius:12px;background:rgba(245,248,242,.76);-webkit-backdrop-filter:blur(6px) saturate(.75);backdrop-filter:blur(6px) saturate(.75);box-shadow:inset 0 0 0 1px rgba(70,110,78,.2);text-align:center;animation:choice-fog-in .18s ease-out}.choice-prompt{font-size:14px;font-weight:750;line-height:1.5;color:#233d2c;text-shadow:0 1px 3px #fff}.choice-options{display:flex;gap:9px;justify-content:center}.choice-options button{min-width:54px;padding:7px 13px;border-radius:999px;font-size:12px;box-shadow:0 2px 8px #263a2a1f}.choice-options [data-confirm=yes]{background:#397a58;color:white}.choice-options [data-confirm=no]{background:#fff;color:#47584b;border:1px solid #b9cabb}@keyframes choice-fog-in{from{opacity:0}to{opacity:1}}@media(prefers-reduced-motion:reduce){.choice-confirm{animation:none}}
 .artifact{position:relative}.artifact.choice-card>.version-tag{position:absolute;top:10px;right:10px;z-index:2;margin:0;padding:5px 8px;border:1px solid #b8d8bb;border-radius:999px;background:rgba(230,246,231,.92);box-shadow:0 2px 8px #17342122;pointer-events:none}.artifact>.stale-tag{position:absolute;top:10px;right:10px;z-index:2;margin:0;padding:5px 8px;border:1px solid #e3c96f;border-radius:999px;color:#765f21;background:rgba(255,240,191,.94);box-shadow:0 2px 8px #43350c22;pointer-events:none;font-size:11px;line-height:normal}
 @media(max-width:900px){.grid{grid-template-columns:1fr}.artifacts{grid-template-columns:1fr 1fr}.hero{align-items:start;flex-direction:column}}@media(max-width:560px){.shell{padding:14px}.artifacts,.checks{grid-template-columns:1fr}.steps{grid-template-columns:1fr 1fr}.hero h1{font-size:25px}}
-@media(max-width:1100px){.assistant-open .shell{margin-right:min(390px,40vw)}.assistant-open .grid{grid-template-columns:minmax(200px,42%) minmax(0,1fr)}.assistant-panel{width:min(390px,40vw)}}@media(max-width:650px){.assistant-open .grid{grid-template-columns:1fr}}@media(max-width:560px){.artifact-pair{grid-column:1}.pair-cards{grid-template-columns:1fr}}
 .upload-preview{display:flex;align-items:center;gap:10px;margin-top:9px;padding:8px;border:1px solid var(--line);border-radius:10px;background:#f7f5ee;font-size:12px}.upload-preview[hidden]{display:none}.upload-preview img{width:72px;height:72px;object-fit:contain}.existing-run{margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:10px}.artifact-heading{display:flex;justify-content:space-between;align-items:center;gap:10px}.artifact-heading button{font-size:12px;padding:7px 10px}
 @media(max-width:1100px){.assistant-open .shell{margin-right:0}.assistant-panel{width:min(390px,100vw)}}@media(max-width:560px){.artifact-pair{grid-column:1}.pair-cards{grid-template-columns:1fr}}
 .lego-dialog{width:calc(100vw - 48px);height:calc(100dvh - 48px);max-width:none;max-height:none;padding:0;border:1px solid #dadbce;border-radius:24px;background:#f5f3ec;overflow:hidden;box-shadow:0 28px 100px #17251f50}.lego-dialog::backdrop{background:#23302773;backdrop-filter:blur(6px)}.lego-dialog iframe{border:0;width:100%;height:100%;display:block}.lego-dialog-close{position:absolute;right:22px;top:22px;z-index:2;width:36px;height:36px;padding:0;border:1px solid #dedfd2;border-radius:50%;background:#fffdf7;color:#687268;font-size:23px;font-weight:400}.lego-dialog-close:hover{background:#e9e7dc}@media(max-width:600px){.lego-dialog{width:100vw;height:100dvh;margin:0;border:0;border-radius:0}.lego-dialog-close{right:16px;top:20px}}
+.stage-console .stage-controls{display:grid;gap:8px;margin-top:16px}
+.stage-console .stage-divider{width:100%;margin:1px 0;border:0;border-top:1px solid var(--line)}
+.stage-console .stage-controls .primary:not([data-stage-action="lego"]){background:transparent;box-shadow:inset 0 0 0 1px #bdb4a4,0 2px 5px #362a241a}
+.stage-console .stage-controls .primary:not([data-stage-action="lego"]):hover:not(:disabled){box-shadow:inset 0 0 0 1px #a59b87,0 3px 6px #362a2424}
+.stage-console .stage-setting label{margin:4px 0 6px}
+.stage-console .version-row select{min-width:0;text-overflow:ellipsis}
+.stage-console .stop-actions{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.stage-console .stop-actions button{width:100%;background:#efc8c0;color:#742e24}
+.stage-console .stop-actions button:disabled{opacity:1;background:#f3e4df;color:#7e554b}
+.stage-console .fileline button{flex:none}
+.stage-console #uploadStatus{min-width:0;overflow-wrap:anywhere}
+.stage-console :is(button,input,select):focus-visible{outline:2px solid #72642f;outline-offset:2px}
+.model-edit-dialog{width:min(1280px,calc(100vw - 40px));height:calc(100dvh - 40px);max-height:none;padding:0;border:1px solid var(--line);border-radius:18px;background:var(--panel);color:var(--ink);overflow:hidden;box-shadow:0 22px 75px #23251f45}
+.model-edit-dialog[open]{display:grid;grid-template-rows:auto minmax(0,1fr)}.model-edit-dialog::backdrop{background:#23251f75}.model-edit-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line)}.model-edit-head h2{margin:0;font-size:18px;overflow-wrap:anywhere}.model-edit-actions{display:flex;flex:none;gap:8px}.model-edit-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,32%);min-height:0}.model-edit-view{min-width:0;min-height:0;padding:15px}.model-edit-view .model-preview{height:100%;border:1px solid var(--line);border-radius:12px}.model-edit-chat{display:flex;flex-direction:column;min-height:0;border-left:1px solid var(--line);background:#fbfaf6}.model-edit-chat h3{margin:0;padding:14px 16px;font-size:15px;border-bottom:1px solid var(--line)}.model-edit-chat form{display:grid;gap:8px;padding:12px;border-top:1px solid var(--line)}.model-edit-chat textarea{width:100%;min-height:74px;resize:vertical;padding:9px;border:1px solid var(--line);border-radius:10px;font:inherit}.model-edit-chat form button{justify-self:end}.model-card-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;min-width:0}.model-card-heading .title-link{overflow-wrap:anywhere;font-weight:750;font-size:13px}.model-card-heading .delete-model{padding:4px 8px;font-size:13px;color:#852c20;background:#f3e4df}
+@media(max-width:720px){.model-edit-body{grid-template-columns:1fr;grid-template-rows:minmax(160px,1fr) minmax(195px,1fr)}.model-edit-chat{border-left:0;border-top:1px solid var(--line)}.model-edit-view{padding:8px}.model-edit-dialog{width:calc(100vw - 16px);height:calc(100dvh - 16px)}}
 </style></head>
 <body><div class="shell">
 <div class="hero"><div><h1>2D → Hunyuan → UniTEX → LEGO</h1><p>本地实验控制台 · 阶段验收 · 断点续跑</p></div><div id="badge" class="badge">就绪</div></div>
-<div class="grid"><section class="panel"><h2>输入与运行设置</h2>
-<label>输入图片</label><div class="fileline"><input id="imagePath" type="text" value="__DEFAULT_IMAGE__" placeholder="上传图片，或填写服务器上的绝对路径"><button onclick="document.getElementById('file').click()">上传图片</button></div><input id="file" type="file" accept=".png,.jpg,.jpeg,.webp" hidden onchange="uploadFile(this)"><div id="inputUploadPreview" class="upload-preview" hidden><img id="inputPreview" alt="上传的输入图片"><span id="uploadStatus"></span></div><p class="hint">Mac 本机路径不能直接填在这里；使用“上传图片”后会自动写入服务器路径。</p>
-<label>输出目录（留空自动生成）</label><div class="fileline"><input id="outputDir" type="text" placeholder="留空使用项目目录下的 runs 文件夹"><button onclick="loadExistingRun()">载入结果</button></div><div id="existingRunBox" class="existing-run" hidden><label>直接加载队友已有结果</label><div class="fileline"><select id="existingRun"></select><button type="button" onclick="importExistingRun()">加载结果</button></div><p class="hint">加载中间产物后可以直接预览、修改 3D 模型，无需重新生成。</p></div>
-<div class="checks">
-<label class="check"><input id="acceptPre" type="checkbox"><span>已检查抠图<br><small>允许进入 Hunyuan</small></span></label>
-<label class="check"><input id="acceptGeo" type="checkbox"><span>已检查几何<br><small>允许进入 UniTEX</small></span></label>
-<label class="check"><input id="acceptTex" type="checkbox"><span>已检查六视图<br><small>允许贴图和校正</small></span></label>
-<label class="check"><input id="buildLego" type="checkbox"><span>允许构建 LEGO<br><small>最终批准</small></span></label>
+<div class="grid"><section class="panel stage-console"><h2>输入与运行设置</h2>
+<label for="imagePath">输入图片</label>
+<div class="fileline"><input id="imagePath" type="text" value="__DEFAULT_IMAGE__" placeholder="上传图片，或填写服务器上的绝对路径"><button type="button" onclick="document.getElementById('file').click()">上传图片</button></div>
+<input id="file" type="file" accept=".png,.jpg,.jpeg,.webp" hidden onchange="uploadFile(this)">
+<div id="inputUploadPreview" class="upload-preview" hidden><img id="inputPreview" alt="上传的输入图片"><span id="uploadStatus"></span></div>
+<label for="outputDir">成果主文件夹（新任务可留空）</label>
+<div class="fileline"><input id="outputDir" type="text" placeholder="填写成果主文件夹路径" onkeydown="if(event.key==='Enter')loadExistingRun()"><button type="button" onclick="loadExistingRun()">打开成果</button></div>
+<div class="stage-controls" role="group" aria-label="阶段操作">
+  <button class="primary" type="button" data-stage-action="foreground">抠图</button>
+  <div class="fileline version-row" data-version-for="input/foreground.png"><select aria-label="抠图历史版本" disabled><option>暂无历史版本</option></select><button type="button" disabled>加载版本</button></div>
+  <hr class="stage-divider">
+  <button class="primary" type="button" data-stage-action="geometry">生成无色模型</button>
+  <div class="fileline version-row" data-version-for="hunyuan/mesh_shape_review_clean.glb"><select aria-label="无色模型历史版本" disabled><option>暂无历史版本</option></select><button type="button" disabled>加载版本</button></div>
+  <hr class="stage-divider">
+  <button class="primary" type="button" data-stage-action="views">生成六视图</button>
+  <div class="fileline version-row" data-version-for="unitex/mv_rgb.png"><select aria-label="六视图历史版本" disabled><option>暂无历史版本</option></select><button type="button" disabled>加载版本</button></div>
+  <hr class="stage-divider">
+  <div class="stage-setting">
+    <label for="projection">UniTEX 投影</label>
+    <select id="projection"><option value="ltm">LTM（推荐，补全不可见面）</option><option value="direct">Direct（快速诊断）</option></select>
+  </div>
+  <button class="primary" type="button" data-stage-action="texture">贴图</button>
+  <div class="fileline version-row" data-version-for="unitex/textured_mesh.glb"><select aria-label="彩色模型历史版本" disabled><option>暂无历史版本</option></select><button type="button" disabled>加载版本</button></div>
+  <hr class="stage-divider">
+  <div class="stage-setting">
+    <label for="legoSource">LEGO 输入模型</label>
+    <select id="legoSource"><option value="">原彩色模型</option></select>
+  </div>
+  <div class="stage-setting">
+    <label for="studs">LEGO 宽度（Stud）</label>
+    <input id="studs" type="number" min="8" max="128" value="24">
+    <div id="legoRecommendation" class="recommendation" hidden></div>
+  </div>
+  <div class="stage-setting">
+    <label for="bundle">生成完整 Bundle</label>
+    <select id="bundle"><option value="off">关闭</option><option value="on">开启</option></select>
+  </div>
+  <button class="primary" type="button" data-stage-action="lego">生成 LEGO</button>
 </div>
-<label>UniTEX 投影</label><select id="projection"><option value="ltm">LTM（推荐，补全不可见面）</option><option value="direct">Direct（快速诊断）</option></select>
-
-<label>LEGO 宽度（Stud）</label><input id="studs" type="number" min="8" max="128" value="24">
-<div id="legoRecommendation" class="recommendation" hidden></div>
-<div class="checks"><label class="check"><input id="bundle" type="checkbox"><span>生成完整 Bundle</span></label><label class="check"><input id="force" type="checkbox"><span>强制重跑已有阶段</span></label></div>
-<div class="actions"><button class="primary" id="runButton" onclick="startRun()">运行到下一验收点</button><button class="danger" onclick="stopRun()">停止当前任务</button></div>
-<p class="hint">透明底标准图会自动跳过抠图。没有勾选的验收项会成为本次运行的停止点。旧结果会自动复用；一般不要勾选“强制重跑”。</p>
+<div class="stop-actions"><button id="stageStopButton" class="danger" type="button" onclick="stopRun()" disabled>停止当前任务</button></div>
 </section>
-<section class="panel"><div class="steps" id="steps"><div class="step">输入</div><div class="step">Hunyuan 几何</div><div class="step">UniTEX 六视图</div><div class="step">贴图与校正</div><button type="button" class="step step-action" onclick="open3DEditStep()">编辑 3D 模型</button><div class="step">LEGO</div></div>
+<section class="panel"><div class="steps" id="steps"><div class="step">输入</div><div class="step">Hunyuan 几何</div><div class="step">UniTEX 六视图</div><div class="step">贴图与校正</div><div class="step">LEGO</div></div>
 <div class="meta"><span id="runDir">尚未运行</span><span id="elapsed">0 秒</span></div><div id="notices" class="notices"></div><div id="log" class="log">等待任务……</div>
 <div class="artifact-heading"><h2 style="margin-top:18px">产物与预览</h2><button type="button" onclick="$('modelFile').click()">上传自己的 GLB</button><input id="modelFile" type="file" accept=".glb,model/gltf-binary" hidden onchange="upload3D(this)"></div><div id="artifacts" class="empty">运行后会在这里显示检查图和模型下载链接</div>
 </section></div></div>
 <button id="assistantLaunch" class="assistant-launch" onclick="toggleAssistant(true)">打开阶段助手</button>
 <aside id="assistantPanel" class="assistant-panel" hidden aria-label="阶段助手">
   <div class="assistant-head"><h2>阶段助手</h2><button onclick="toggleAssistant(false)" aria-label="收起助手">收起 ×</button></div>
-  <div id="chatHistory" class="chat-history"><div class="chat-line">选择阶段或对话模型，然后描述想检查或修改的内容。修改会先生成候选，原版不会覆盖。</div></div>
+  <div id="chatHistory" class="chat-history"><div class="chat-line">选择阶段或对话模型，然后描述想检查或修改的内容。修改会先生成候选，原版不会覆盖。__ASSISTANT_IMAGE_HINT__</div></div>
   <div class="chat-compose"><textarea id="chatInput" placeholder="描述你想调整的地方……"></textarea>
     <div id="modelPicker" class="picker" role="menu" hidden>
       <div class="picker-title">按阶段 · 自动选择对话模型</div>
@@ -1365,36 +1706,111 @@ label{display:block;font-size:13px;font-weight:700;margin:13px 0 6px}input[type=
       <button class="picker-option" role="menuitemradio" data-mode="stage" data-value="orientation" onclick="selectAssistant(this)">方位校正</button>
       <button class="picker-option" role="menuitemradio" data-mode="stage" data-value="lego" onclick="selectAssistant(this)">LEGO 拼搭</button>
       <div class="picker-divider"></div><div class="picker-title">直接选对话模型 · 不指定阶段</div>
-      <button class="picker-option" role="menuitemradio" data-mode="model" data-value="qwen3.8-max" onclick="selectAssistant(this)">Qwen3.8 Max</button>
-      <button class="picker-option" role="menuitemradio" data-mode="model" data-value="qwen3.8-flash" onclick="selectAssistant(this)">Qwen3.8 Flash</button>
+      __ASSISTANT_MODELS__
     </div>
-    <div class="chat-actions"><button id="selectionButton" onclick="togglePicker()" aria-haspopup="menu" aria-expanded="false">Qwen3.8 Max ▾</button><button id="stopAssistantJob" type="button" hidden onclick="stopAssistantJob()">停止任务</button><button id="resume3D" type="button" hidden onclick="resume3DResult()">继续编辑</button><button id="stop3D" type="button" hidden onclick="stop3DResult()">停止编辑</button><button id="sendChat" class="primary" onclick="sendChat()">发送 ↑</button></div>
+    <div class="chat-actions"><button id="selectionButton" onclick="togglePicker()" aria-haspopup="menu" aria-expanded="false">__ASSISTANT_DEFAULT__ ▾</button><button id="stopAssistantJob" type="button" hidden onclick="stopAssistantJob()">停止任务</button><button id="resume3D" type="button" hidden onclick="resume3DResult()">继续编辑</button><button id="stop3D" type="button" hidden onclick="stop3DResult()">停止编辑</button><button id="sendChat" class="primary" onclick="sendChat()">发送 ↑</button></div>
   </div>
 </aside><input id="revisionFile" type="file" hidden onchange="uploadRevision(this)">
 <dialog id="legoDetailDialog" class="lego-dialog" aria-label="LEGO 模型详情"><button id="closeLegoDetail" class="lego-dialog-close" aria-label="关闭模型详情">×</button><iframe id="legoDetailFrame" title="LEGO 模型详情"></iframe></dialog>
+<dialog id="modelEditDialog" class="model-edit-dialog" aria-labelledby="modelEditName">
+  <header class="model-edit-head"><h2 id="modelEditName">彩色模型</h2><div class="model-edit-actions"><button id="checkModelEdit" type="button" disabled>检查</button><button id="saveModelEdit" type="button" class="primary" disabled>保存修改成果</button><button id="closeModelEdit" type="button" aria-label="关闭模型编辑">关闭 ×</button></div></header>
+  <div class="model-edit-body"><div id="modelEditView" class="model-edit-view"></div><section class="model-edit-chat"><h3>3D 修改助手</h3><div id="modelEditHistory" class="chat-history" aria-live="polite"></div><form id="modelEditForm"><textarea id="modelEditInput" aria-label="修改要求" placeholder="描述想修改的地方……" required></textarea><button id="sendModelEdit" type="submit" class="primary">发送 ↑</button></form></section></div>
+</dialog>
 <script type="importmap">{"imports":{"three":"/static/three/three.module.js","three/addons/":"/static/three/addons/"}}</script>
 <script type="module" src="/static/model-preview.js"></script>
+<script src="/static/model-edit.js"></script>
 <script>
-const $=id=>document.getElementById(id); let polling=false, artifactSignature=null, currentRunDir='', formInitialized=false, assistantSelection={mode:'model',value:'qwen3.8-max'}, chatTurns=[], pendingChoice=null, revisionRelative='', pointerStart=null, assistantJobId='', assistantJobLine=null;
+const $=id=>document.getElementById(id); let polling=false, artifactSignature=null, currentRunDir='', formInitialized=false, assistantSelection=null, chatTurns=[], pendingChoice=null, revisionRelative='', pointerStart=null, assistantJobId='', assistantJobLine=null;
 async function api(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});const d=await r.json();if(!r.ok)throw new Error(d.error||'请求失败');return d}
 function showInputPreview(url,text){$('inputPreview').src=url;$('uploadStatus').textContent=text;$('inputUploadPreview').hidden=false}
 async function uploadFile(input){const f=input.files[0];if(!f)return;try{showInputPreview(URL.createObjectURL(f),'正在上传 '+f.name+'…');const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error('无法读取所选图片'));reader.readAsDataURL(f)});const d=await api('/api/upload',{name:f.name,data});$('imagePath').value=d.path;$('outputDir').value=d.output_dir;showInputPreview(d.url,'已上传 '+f.name+'，可以开始运行');formInitialized=true;artifactSignature=null;refresh()}catch(e){$('uploadStatus').textContent='上传失败：'+e.message;alert('图片上传失败：'+e.message)}finally{input.value=''}}
-async function loadExistingRunOptions(){try{const r=await fetch('/api/examples');const d=await r.json();const runs=d.runs||[];$('existingRunBox').hidden=!runs.length;$('existingRun').innerHTML=runs.map(x=>`<option value="${esc(x.id)}">${esc(x.label)}</option>`).join('')}catch(e){$('existingRunBox').hidden=true}}
-async function importExistingRun(){try{const id=$('existingRun').value;if(!id)throw new Error('请选择已有结果');const d=await api('/api/import-run',{id});currentRunDir=d.run_dir;formInitialized=false;artifactSignature=null;await refresh();chatLine('assistant','已加载队友的已有结果，可以直接预览和修改 3D 模型。')}catch(e){alert('加载已有结果失败：'+e.message)}}
-async function startRun(){try{await api('/api/start',{image_path:$('imagePath').value,output_dir:$('outputDir').value,accept_preprocess:$('acceptPre').checked,accept_geometry:$('acceptGeo').checked,accept_unitex:$('acceptTex').checked,build_lego:$('buildLego').checked,bundle:$('bundle').checked,force:$('force').checked,projection:$('projection').value,target_studs:$('studs').value});polling=true;refresh()}catch(e){alert(e.message)}}
+let consoleStatus={};
+const versionRows=document.querySelectorAll('[data-version-for]');
+function versionRowState(row, busy){
+  const select=row.querySelector('select');
+  select.disabled=busy||!select.value;
+  select.title=select.value;
+  row.querySelector('button').disabled=select.disabled;
+}
+function renderStageVersions(d,busy){
+  for(const row of versionRows){
+    const select=row.querySelector('select');
+    if(d.stage_versions||row.dataset.run!==d.run_dir){
+      const versions=d.stage_versions?.[row.dataset.versionFor]||[];
+      const signature=JSON.stringify([d.run_dir,versions]);
+      if(row.dataset.signature!==signature){
+        const labels={upload:'上传',assistant:'修改','3D 助手':'修改'};
+        select.replaceChildren(...versions.map(v=>new Option(`【${labels[v.origin]||v.origin}】 ${v.path}`,v.path,false,v.active)));
+        if(!versions.length) select.add(new Option('暂无历史版本',''));
+        row.dataset.signature=signature;
+        row.dataset.run=d.run_dir||'';
+      }
+    }
+    versionRowState(row,!!busy||row.dataset.loading==='1');
+  }
+}
+for(const row of versionRows){
+  const select=row.querySelector('select');
+  select.addEventListener('change',()=>{select.title=select.value});
+  row.querySelector('button').addEventListener('click',async()=>{
+    row.dataset.loading='1';
+    versionRowState(row,true);
+    try{
+      await api('/api/revision/load-version',{run_dir:currentRunDir,relative:row.dataset.versionFor,path:select.value});
+      pendingChoice=null;
+      artifactSignature=null;
+      await refresh();
+    }catch(err){alert(err.message)}
+    finally{row.dataset.loading='';renderStageVersions(consoleStatus,consoleStatus.running||consoleStatus.ai_editor?.running||consoleStatus.read_only_run)}
+  });
+}
+function renderConsole(d){
+  consoleStatus=d;
+  $('stageStopButton').disabled=!d.running||d.message==='正在停止';
+  const input=$('imagePath').value.trim();
+  const change=input&&input!==d.display_image;
+  const busy=d.running||d.ai_editor?.running||d.read_only_run;
+  renderStageVersions(d,busy);
+  renderLegoModelChoices(d);
+  document.querySelectorAll('[data-stage-action]').forEach(button=>{
+    const action=button.dataset.stageAction;
+    const missing=d.stage_blocked?.[action]||'';
+    const requiresView=action!=='foreground'&&!(action==='geometry'&&change);
+    const disabledByInput=action==='lego'&&$('legoSource').value?false:(requiresView?!!missing:!input);
+    button.disabled=!!busy||disabledByInput;
+    button.title=disabledByInput?missing:'';
+  });
+}
+async function runStage(button){
+  button.disabled=true;
+  try{
+    await api('/api/stage-action',{
+      action:button.dataset.stageAction,
+      image_path:$('imagePath').value,output_dir:$('outputDir').value,
+      projection:$('projection').value,studs:$('studs').value,bundle:$('bundle').value==='on',model_id:$('legoSource').value,
+    });
+    polling=true;
+    await refresh();
+  }catch(err){
+    renderConsole(consoleStatus);
+    alert(err.message);
+  }
+}
+document.querySelectorAll('[data-stage-action]').forEach(button=>button.addEventListener('click',()=>runStage(button)));
+$('imagePath').addEventListener('input',()=>renderConsole(consoleStatus));
+$('legoSource').addEventListener('change',()=>renderConsole(consoleStatus));
 async function loadExistingRun(){try{await api('/api/load-run',{run_dir:$('outputDir').value});formInitialized=false;pendingChoice=null;artifactSignature=null;refresh()}catch(e){alert(e.message)}}
 async function stopRun(){try{await api('/api/stop',{})}catch(e){alert(e.message)}}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function stageIndex(state,arts,edit){const s=state.stage||'';if(s==='complete')return 6;if(edit?.selected)return 5;if(edit?.running||edit?.source||s==='oriented_review')return 4;if(s==='foreground_review')return 0;if(s==='geometry_review')return 1;if(s==='unitex_review')return 2;if(arts.some(a=>a.relative==='oriented/mesh_upright.glb'||a.relative==='unitex/textured_mesh.glb'))return 4;if(arts.some(a=>a.relative.includes('hunyuan/')))return 1;return 0}
-function renderSteps(state,arts,edit){const idx=stageIndex(state,arts,edit);const nodes=[...$('steps').children];nodes.forEach((node,i)=>{node.className='step '+(i===4?'step-action ':'')+(i<idx?'active':i===idx?'wait':'');if(i===4){node.textContent=edit.running?'编辑 3D 中…':edit.latest_result&&!edit.selected&&edit.adoption_status==='review'?'编辑结果待采用':'编辑 3D 模型';if(state.stage==='complete'&&!edit.latest_result)node.className='step step-action skipped'}})}
-function open3DEditStep(){toggleAssistant(true);selectAssistant(document.querySelector('.picker-option[data-value="geometry_edit"]'));$('chatInput').focus()}
+function stageIndex(state,arts){const s=state.stage||'';if(s==='complete'||s==='lego_preview'||s==='lego_unbuildable')return 5;if(s==='oriented_review')return 4;if(s==='foreground_review')return 0;if(s==='geometry_review')return 1;if(s==='unitex_review')return 2;if(arts.some(a=>a.relative==='oriented/mesh_upright.glb'||a.relative==='unitex/textured_mesh.glb'))return 4;if(arts.some(a=>a.relative.includes('hunyuan/')))return 1;return 0}
+function renderSteps(state,arts){const idx=stageIndex(state,arts);[...$('steps').children].forEach((node,i)=>{node.className='step '+(i<idx?'active':i===idx?'wait':'')})}
 function showRecommendation(r){const box=$('legoRecommendation');if(!r||r.status==='unavailable'){box.hidden=true;return}box.hidden=false;if(r.status==='ready'){box.innerHTML=`Legolization 推荐：<b>${r.target_studs} Stud</b><button type="button" onclick="$('studs').value=${r.target_studs}">使用推荐值</button><br><small>在 ${r.minimum}–${r.maximum} Stud 范围内按模型体素化质量自动选择；不保证最终一定可构建。</small>`}else if(r.status==='calculating'){box.textContent=`正在计算 Legolization 推荐宽度（${r.minimum}–${r.maximum} Stud）……`}else if(r.status==='waiting'){box.textContent='当前任务完成后计算 Legolization 推荐宽度……'}else{box.textContent='推荐宽度计算失败：'+(r.error||'未知错误')}}
-const intermediatePaths=new Set(['input/review.png','hunyuan/qa/shape_qa_overlay.png','unitex/mv_rgb.png','oriented/lego_input.ply']);
-function renderArtifacts(groups){
-  const signature=JSON.stringify(groups.map(g=>[g.relative,g.original?.mtime_ns,g.candidate?.mtime_ns,g.choice,g.stale,g.original?.comparison?.bundle]));
+const intermediatePaths=new Set(['input/review.png','hunyuan/qa/shape_qa_overlay.png','unitex/mv_rgb.png','oriented/mesh_upright.glb','oriented/lego_input.ply']);
+function renderArtifacts(groups, readOnly=false, running=false, verifyingStuds=null, verifyingModelId=''){
+  const signature=JSON.stringify([running,verifyingStuds,verifyingModelId,groups.map(g=>[g.relative,g.original?.url,g.original?.mtime_ns,g.candidate?.url,g.candidate?.mtime_ns,g.choice,g.stale,g.original?.comparison?.bundle,g.original?.lego_validation])]);
   if(signature===artifactSignature)return;
   const expanded=$('intermediateArtifacts')?.open||false;
-  window.disposeModelPreviews?.();
+  $('artifacts').querySelectorAll('.model-preview').forEach(node=>window.unmountModelPreview?.(node));
   artifactSignature=signature;
   const visual=a=>a.kind==='image'
     ?`<img src="${esc(a.url)}&v=${a.mtime_ns}" alt="${esc(a.label)}">`
@@ -1404,11 +1820,23 @@ function renderArtifacts(groups){
         ?'<div class="model-preview-missing">未找到本机 LDraw 零件库；仍可下载 MPD</div>'
         :'';
   const artifactPath=a=>new URL(a.url,location.href).searchParams.get('path')||a.relative;
-  const title=a=>/\.(mpd|ldr)$/i.test(artifactPath(a))?`<a class="title-link" data-lego-detail href="/lego?${esc(new URLSearchParams({path:artifactPath(a),label:a.label}).toString())}" title="${esc(artifactPath(a))}">${esc(a.label)}</a>`:`<b title="${esc(artifactPath(a))}">${esc(a.label)}</b>`;
-  const card=(a,g,version,selectable=false)=>`<div class="artifact ${selectable?'choice-card':''}" ${selectable?`data-relative="${esc(g.relative)}" data-version="${version}" data-ai-edit="${g.ai_edit?'1':'0'}"`:''}>${visual(a)}${selectable?`<span class="version-tag">${version==='original'?'原版':'修改版'}</span>`:''}${g.stale?'<span class="stale-tag">旧结果</span>':''}<div class="info">${a.comparison_url?`<a class="title-link" href="${esc(a.comparison_url)}" target="_blank" rel="noopener" title="${esc(artifactPath(a))}">${esc(a.label)}</a>`:title(a)}${a.preview_format==='mpd'?'<span class="credit">零件几何：<a href="https://www.ldraw.org/" target="_blank" rel="noopener">LDraw Parts Library</a></span>':''}<div class="artifact-actions"><a href="${esc(a.url)}" target="_blank" rel="noopener" title="打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB">打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB</a>${g.ai_edit&&g.choice==='candidate'?`<button type="button" data-ai-reset="1">恢复原模型</button>`:''}${g.stage&&!g.stale&&!g.ai_edit?`<button class="upload-revision" type="button" data-upload="${esc(g.relative)}">上传修改版</button>`:''}</div>${selectable&&pendingChoice?.relative===g.relative&&pendingChoice?.version===version?`<div class="choice-confirm" role="group" aria-label="确认选择这版卡片"><div class="choice-prompt">确认选这版吗？</div><div class="choice-options"><button data-confirm="yes">是</button><button data-confirm="no">否</button></div></div>`:''}</div></div>`;
-  const group=g=>g.candidate&&!g.choice?`<div class="artifact-pair"><div class="pair-title">${esc(g.original.label)} · 选择一版</div><div class="pair-cards">${card(g.original,g,'original',true)}${card(g.candidate,g,'candidate',true)}</div></div>`:card(g.choice==='candidate'?g.candidate:g.original,g,g.choice||'',false);
-  const main=groups.filter(g=>!intermediatePaths.has(g.relative));
-  const intermediate=groups.filter(g=>intermediatePaths.has(g.relative));
+  const verificationLabel=a=>{
+    if(a.lego_validation==='verified') return '已验证';
+    if(a.lego_validation==='unbuildable') return '验证未通过';
+    return a.studs===verifyingStuds&&(a.lego_model_id||'')===verifyingModelId?'验证中…':'验证并修复';
+  };
+  const title=a=>a.lego_validation!=='pending'&&/\.(mpd|ldr)$/i.test(artifactPath(a))?`<a class="title-link" data-lego-detail href="/lego?${esc(new URLSearchParams({path:artifactPath(a),label:a.label}).toString())}" title="${esc(artifactPath(a))}">${esc(a.label)}</a>`:`<b title="${esc(artifactPath(a))}">${esc(a.label)}</b>`;
+  const modelCardTitle=(a,g,selectable)=>{
+    if(readOnly||selectable||g.ai_edit||(g.relative!=='unitex/textured_mesh.glb'&&!a.model_id)) return title(a);
+    const name=esc(a.label);
+    const remove=a.model_id?`<button type="button" class="delete-model" data-delete-model="${a.model_id}" data-name="${name}" title="删除模型" aria-label="删除模型">🗑</button>`:'';
+    return `<div class="model-card-heading"><a class="title-link" href="#modelEditDialog" data-model-edit="${a.model_id||''}" title="${esc(artifactPath(a))}">${name}</a>${remove}</div>`;
+  };
+  const card=(a,g,version,selectable=false)=>`<div class="artifact ${(selectable&&!readOnly)?'choice-card':''}" ${selectable?`data-relative="${esc(g.relative)}" data-version="${version}" data-ai-edit="${g.ai_edit?'1':'0'}"`:''}>${visual(a)}${selectable?`<span class="version-tag">${version==='original'?'原版':'修改版'}</span>`:''}${g.stale?'<span class="stale-tag">旧结果</span>':''}<div class="info">${!readOnly&&a.comparison_url?`<a class="title-link" href="${esc(a.comparison_url)}" target="_blank" rel="noopener" title="${esc(artifactPath(a))}">${esc(a.label)}</a>`:modelCardTitle(a,g,selectable)}${a.preview_format==='mpd'?'<span class="credit">零件几何：<a href="https://www.ldraw.org/" target="_blank" rel="noopener">LDraw Parts Library</a></span>':''}<div class="artifact-actions"><a href="${esc(a.url)}" target="_blank" rel="noopener" title="打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB">打开 / 下载 · ${(a.size/1048576).toFixed(2)} MB</a>${!readOnly&&g.ai_edit&&g.choice==='candidate'?`<button type="button" data-ai-reset="1">恢复原模型</button>`:''}${a.lego_validation&&!readOnly&&!g.stale?`<button class="primary${a.lego_validation==='verified'?' is-verified':''}" type="button" data-verify-lego="${a.studs}" data-lego-model-id="${a.lego_model_id||''}" ${running||a.lego_validation!=='pending'?'disabled':''}>${verificationLabel(a)}</button>`:''}${g.stage&&!g.stale&&!readOnly&&!g.ai_edit&&!a.lego_validation?`<button class="upload-revision" type="button" data-upload="${esc(g.relative)}">上传修改版</button>`:''}</div>${!readOnly&&selectable&&pendingChoice?.relative===g.relative&&pendingChoice?.version===version?`<div class="choice-confirm" role="group" aria-label="确认选择这版卡片"><div class="choice-prompt">确认选这版吗？</div><div class="choice-options"><button data-confirm="yes">是</button><button data-confirm="no">否</button></div></div>`:''}</div></div>`;
+  const group=g=>g.candidate&&!g.choice?`<div class="artifact-pair"><div class="pair-title">${esc(g.original.label)}${readOnly?' · 待确认':' · 选择一版'}</div><div class="pair-cards">${card(g.original,g,'original',true)}${card(g.candidate,g,'candidate',true)}</div></div>`:card(g.choice==='candidate'?g.candidate:g.original,g,g.choice||'',false);
+  const isIntermediate=g=>intermediatePaths.has(g.relative)&&!g.ai_edit;
+  const main=groups.filter(g=>!isIntermediate(g));
+  const intermediate=groups.filter(isIntermediate);
   $('artifacts').className=groups.length?'artifacts':'empty';
   $('artifacts').innerHTML=groups.length
     ?main.map(group).join('')+(intermediate.length?`<details id="intermediateArtifacts" class="artifact-disclosure" ${expanded?'open':''}><summary>查看中间产物</summary><div class="artifacts">${intermediate.map(group).join('')}</div></details>`:'')
@@ -1422,7 +1850,7 @@ $('legoDetailDialog').addEventListener('close',()=>{$('legoDetailFrame').src='ab
 window.addEventListener('message',e=>{if(e.origin===location.origin&&e.source===$('legoDetailFrame').contentWindow&&e.data?.type==='lego-detail-close')$('legoDetailDialog').close()});
 function togglePicker(){const p=$('modelPicker');p.hidden=!p.hidden;$('selectionButton').setAttribute('aria-expanded',String(!p.hidden))}
 function selectAssistant(button){assistantSelection={mode:button.dataset.mode,value:button.dataset.value};$('selectionButton').textContent=button.textContent.trim()+' ▾';$('modelPicker').hidden=true;$('selectionButton').setAttribute('aria-expanded','false');document.querySelectorAll('.picker-option').forEach(b=>b.setAttribute('aria-checked',String(b===button)))}
-document.querySelector('.picker-option[data-value="qwen3.8-max"]').setAttribute('aria-checked','true');
+selectAssistant(document.querySelector('.picker-option[data-mode="model"]'));
 function chatLine(role,text){const el=document.createElement('div');el.className='chat-line '+role;el.textContent=text;$('chatHistory').append(el);$('chatHistory').scrollTop=$('chatHistory').scrollHeight;return el}
 async function sendChat(){const message=$('chatInput').value.trim();if(!message)return;$('chatInput').value='';chatLine('user',message);const wait=chatLine('assistant','思考中……');$('sendChat').disabled=true;try{if(assistantSelection.value==='geometry_edit'){await api('/api/ai-edit/start',{instruction:message});wait.textContent='已提交 3D 模型修改，正在分析模型与指令……';poll3DEdit(wait);return}const d=await api('/api/assistant/chat',{run_dir:currentRunDir,mode:assistantSelection.mode,value:assistantSelection.value,message,history:chatTurns});wait.textContent=d.answer;chatTurns.push({role:'user',content:message},{role:'assistant',content:d.answer});if(d.job){assistantJobId=d.job.id;assistantJobLine=chatLine('assistant','任务已排队……');$('stopAssistantJob').hidden=false;pollAssistantJob()}}catch(e){wait.textContent=e.message}finally{$('sendChat').disabled=false}}
 async function upload3D(input){const file=input.files[0];if(!file)return;try{if(!file.name.toLowerCase().endsWith('.glb'))throw new Error('请上传 GLB 文件');const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(file)});const d=await api('/api/ai-edit/upload',{name:file.name,data});currentRunDir=d.run_dir;formInitialized=false;artifactSignature=null;await refresh();chatLine('assistant','3D 模型已加载。在右侧阶段助手选择“修改 3D 模型”，然后输入修改要求。')}catch(e){alert('上传 GLB 失败：'+e.message)}finally{input.value=''}}
@@ -1434,11 +1862,22 @@ async function poll3DEdit(line){try{const r=await fetch('/api/status');const d=a
 async function pollAssistantJob(){if(!assistantJobId)return;try{const r=await fetch('/api/assistant/job');const d=await r.json();if(d.id!==assistantJobId)return;if(assistantJobLine)assistantJobLine.textContent=d.summary||d.state;if(['queued','running'].includes(d.state)){setTimeout(pollAssistantJob,2000)}else{$('stopAssistantJob').hidden=true;assistantJobId='';artifactSignature=null;refresh();if(d.result_path&&assistantJobLine){const a=document.createElement('a');a.href='/file?path='+encodeURIComponent(d.result_path);a.target='_blank';a.rel='noopener';a.textContent=' 打开结果';assistantJobLine.append(a)}}}catch(e){if(assistantJobLine)assistantJobLine.textContent='任务状态读取失败：'+e.message;$('stopAssistantJob').hidden=true;assistantJobId=''}}
 async function stopAssistantJob(){try{await api('/api/assistant/stop',{})}catch(e){alert(e.message)}}
 function openRevisionUpload(relative){revisionRelative=relative;const f=$('revisionFile');f.accept='.'+relative.split('.').pop();f.value='';f.click()}
-async function uploadRevision(input){const f=input.files[0];if(!f)return;try{const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]);r.onerror=reject;r.readAsDataURL(f)});await api('/api/revision/upload',{run_dir:currentRunDir,relative:revisionRelative,name:f.name,data});artifactSignature=null;refresh()}catch(e){alert(e.message)}}
+async function uploadRevision(input){const f=input.files[0];if(!f)return;const run=currentRunDir,relative=revisionRelative;try{const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]);r.onerror=reject;r.readAsDataURL(f)});await api('/api/revision/upload',{run_dir:run,relative,name:f.name,data});pendingChoice=null;artifactSignature=null;refresh()}catch(e){alert(e.message)}}
 $('artifacts').addEventListener('pointerdown',e=>{pointerStart={x:e.clientX,y:e.clientY}});
-$('artifacts').addEventListener('click',async e=>{const aiReset=e.target.closest('[data-ai-reset]');if(aiReset){await reset3DResult();return}const upload=e.target.closest('[data-upload]');if(upload){openRevisionUpload(upload.dataset.upload);return}const confirm=e.target.closest('[data-confirm]');if(confirm){const choice=pendingChoice;if(!choice)return;if(confirm.dataset.confirm==='no'){pendingChoice=null;artifactSignature=null;refresh();return}try{if(choice.ai_edit){await api(choice.version==='candidate'?'/api/ai-edit/accept':'/api/ai-edit/reset',{})}else{await api('/api/revision/choose',{run_dir:currentRunDir,relative:choice.relative,choice:choice.version})}pendingChoice=null;artifactSignature=null;refresh()}catch(err){alert(err.message)}return}if(e.target.closest('a,button'))return;const card=e.target.closest('.choice-card');if(!card)return;if(pointerStart&&Math.hypot(e.clientX-pointerStart.x,e.clientY-pointerStart.y)>6)return;pendingChoice={relative:card.dataset.relative,version:card.dataset.version,ai_edit:card.dataset.aiEdit==='1'};artifactSignature=null;refresh()});
-async function refresh(){if(window.uiMode&&window.uiMode!=='image')return;try{const r=await fetch('/api/status');const d=await r.json();currentRunDir=d.run_dir||'';const edit=d.ai_editor||{};$("resume3D").hidden=!edit.can_resume;$("stop3D").hidden=!edit.running;if(!formInitialized){if(d.display_image)$('imagePath').value=d.display_image;if(d.display_output_dir)$('outputDir').value=d.display_output_dir;if(d.display_image&&d.display_image.includes('/ui_uploads/'))showInputPreview('/file?path='+encodeURIComponent(d.display_image),'已上传的输入图片');formInitialized=true}$('badge').textContent=(edit.running?edit.message:d.message)+((d.running||edit.running)?' · '+(edit.running?edit.elapsed:d.elapsed)+'s':'');$('runButton').disabled=d.running||edit.running;showRecommendation(d.lego_recommendation);const notices=d.notices||[];$('notices').innerHTML=notices.map(n=>`<div class="notice ${n.level==='error'?'error':'warning'}">${esc(n.text)}</div>`).join('');$('log').textContent=(edit.running||edit.logs?edit.logs:d.logs)||'等待任务……';$('log').scrollTop=$('log').scrollHeight;$('runDir').textContent=d.display_output_dir||'尚未运行';$('elapsed').textContent=d.elapsed+' 秒';renderSteps(d.pipeline_state||{},d.artifacts||[],edit);renderArtifacts(d.artifact_groups||[]);polling=!!(d.running||edit.running);if(polling)setTimeout(refresh,1200)}catch(e){polling=false;$('badge').textContent='连接失败'}}
-loadExistingRunOptions();refresh();setInterval(()=>{if(!polling)refresh()},5000);
+async function verifyLego(button){
+  button.disabled=true;
+  try{
+    await api('/api/lego-verify',{run_dir:currentRunDir,studs:Number(button.dataset.verifyLego),model_id:button.dataset.legoModelId});
+    polling=true;
+    await refresh();
+  }catch(err){
+    button.disabled=false;
+    alert(err.message);
+  }
+}
+$('artifacts').addEventListener('click',async e=>{const verify=e.target.closest('[data-verify-lego]');if(verify){await verifyLego(verify);return}const aiReset=e.target.closest('[data-ai-reset]');if(aiReset){await reset3DResult();return}const upload=e.target.closest('[data-upload]');if(upload){openRevisionUpload(upload.dataset.upload);return}const confirm=e.target.closest('[data-confirm]');if(confirm){const choice=pendingChoice;if(!choice)return;if(confirm.dataset.confirm==='no'){pendingChoice=null;artifactSignature=null;refresh();return}try{if(choice.ai_edit){await api(choice.version==='candidate'?'/api/ai-edit/accept':'/api/ai-edit/reset',{})}else{await api('/api/revision/choose',{run_dir:currentRunDir,relative:choice.relative,choice:choice.version})}pendingChoice=null;artifactSignature=null;refresh()}catch(err){alert(err.message)}return}if(e.target.closest('a,button'))return;const card=e.target.closest('.choice-card');if(!card)return;if(pointerStart&&Math.hypot(e.clientX-pointerStart.x,e.clientY-pointerStart.y)>6)return;pendingChoice={relative:card.dataset.relative,version:card.dataset.version,ai_edit:card.dataset.aiEdit==='1'};artifactSignature=null;refresh()});
+async function refresh(){if(window.uiMode&&window.uiMode!=='image')return;try{const r=await fetch('/api/status');const d=await r.json();currentRunDir=d.run_dir||'';const edit=d.ai_editor||{};$("resume3D").hidden=!edit.can_resume;$("stop3D").hidden=!edit.running;if(!formInitialized){$('imagePath').value=d.display_image||'';$('outputDir').value=d.display_output_dir||'';$('inputUploadPreview').hidden=true;if(d.display_image&&d.display_image.replaceAll('\\','/').includes('/ui_uploads/'))showInputPreview('/file?path='+encodeURIComponent(d.display_image),'已上传的输入图片');formInitialized=true}$('badge').textContent=(edit.running?edit.message:d.message)+((d.running||edit.running)?' · '+(edit.running?edit.elapsed:d.elapsed)+'s':'');renderConsole(d);showRecommendation(d.lego_recommendation);const notices=d.notices||[];$('notices').innerHTML=notices.map(n=>`<div class="notice ${n.level==='error'?'error':'warning'}">${esc(n.text)}</div>`).join('');$('log').textContent=(edit.running||edit.logs?edit.logs:d.logs)||'等待任务……';$('log').scrollTop=$('log').scrollHeight;$('runDir').textContent=d.display_output_dir||'尚未运行';$('elapsed').textContent=d.elapsed+' 秒';renderSteps(d.pipeline_state||{},d.artifacts||[]);renderArtifacts(d.artifact_groups||[], !!d.read_only_run, !!d.running, d.verifying_studs, d.verifying_model_id);polling=!!(d.running||edit.running);if(polling)setTimeout(refresh,1200)}catch(e){polling=false;$('badge').textContent='连接失败'}}
+refresh();setInterval(()=>{if(!polling)refresh()},5000);
 </script></body></html>"""
 
 
@@ -1446,14 +1885,43 @@ loadExistingRunOptions();refresh();setInterval(()=>{if(!polling)refresh()},5000)
 THREE_D_HTML = (STATIC_ROOT / "three-pipeline.html").read_text(encoding="utf-8")
 HTML = HTML.replace('<body>', '<body data-default-mode="__DEFAULT_MODE__">', 1)
 HTML = HTML.replace('<h1>2D → Hunyuan → UniTEX → LEGO</h1>', '<h1>2D / 3D → LEGO</h1>', 1)
-HTML = HTML.replace('<div class="grid"><section class="panel"><h2>输入与运行设置</h2>',
+HTML = HTML.replace('<div class="grid"><section class="panel stage-console">',
     '<div class="mode-switch"><button id="mode2dButton" type="button">图片 → 3D → LEGO</button><button id="mode3dButton" type="button">3D 文件 → LEGO</button></div>'
-    + THREE_D_HTML + '<div id="imageWorkflow" class="grid"><section class="panel"><h2>输入与运行设置</h2>', 1)
+    + THREE_D_HTML + '<div id="imageWorkflow" class="grid"><section class="panel stage-console">', 1)
 HTML = HTML.replace('</body></html>', '<script type="module" src="/static/three-pipeline.js"></script></body></html>', 1)
 HTML = HTML.replace('<button id="mode3dButton" type="button">3D 文件 → LEGO</button>',
                     '<button id="mode3dButton" type="button">3D 文件 → LEGO</button><button id="modeArButton" type="button">ArUco 预览</button>', 1)
 HTML = HTML.replace('<div id="imageWorkflow"', (STATIC_ROOT / 'aruco-panel.html').read_text(encoding='utf-8') + '<div id="imageWorkflow"', 1)
 HTML = HTML.replace('</body></html>', '<script type="module" src="/static/aruco-panel.js"></script></body></html>', 1)
+
+
+def opened_folder_for(path: Path) -> Path | None:
+    selection = CONTROLLER.opened_view()
+    if selection and ui_result_folders.inside(path, selection[0]) is not None:
+        return selection[0]
+    return None
+
+
+def downloadable_file(path: Path) -> bool:
+    folder = opened_folder_for(path)
+    if folder is not None:
+        return ui_result_folders.downloadable(path, folder)
+    if not path.is_file() or not within_root(path):
+        return False
+    relative = path.resolve().relative_to(ROOT.resolve())
+    return (
+        not any(part.startswith(".") and part != ".ui-details" for part in relative.parts)
+        and path.name not in {"config.local.json", "local.json"}
+        and path.suffix.lower() not in {".pem", ".key"}
+    )
+
+
+def lego_model_path(value: str) -> Path:
+    path = Path(value).resolve()
+    folder = opened_folder_for(path)
+    if folder is not None and not ui_result_folders.downloadable(path, folder):
+        raise ValueError("该文件不属于当前成果的 LEGO 产物")
+    return ui_lego_details.model_path(value, folder if folder is not None else ROOT)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1496,7 +1964,25 @@ class Handler(BaseHTTPRequestHandler):
             mode = os.environ.get('PIPELINE_UI_DEFAULT_MODE', 'image')
             if mode not in {'image', '3d', 'ar'}:
                 mode = 'image'
-            body = HTML.replace("__DEFAULT_IMAGE__", html.escape(str(DEFAULT_IMAGE), quote=True)).replace("__DEFAULT_MODE__", mode).encode("utf-8")
+            models = ui_assistant.direct_models()
+            model_buttons = "\n".join(
+                '<button class="picker-option" role="menuitemradio" data-mode="model" '
+                f'data-value="{html.escape(model, quote=True)}" onclick="selectAssistant(this)">'
+                f'{html.escape(label)}</button>'
+                for model, label in models.items()
+            )
+            image_hint = (
+                "当前可看图分析；需要自动改图时请先配置图像编辑模型。"
+                if ui_assistant.relay_model() and not ui_agent_jobs.image_relay_available() else ""
+            )
+            body = (
+                HTML.replace("__DEFAULT_IMAGE__", html.escape(str(DEFAULT_IMAGE), quote=True))
+                .replace("__ASSISTANT_DEFAULT__", html.escape(next(iter(models.values()))))
+                .replace("__ASSISTANT_IMAGE_HINT__", image_hint)
+                .replace("__ASSISTANT_MODELS__", model_buttons)
+                .replace("__DEFAULT_MODE__", mode)
+                .encode("utf-8")
+            )
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -1512,7 +1998,22 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         elif parsed.path == "/api/status":
-            self.send_json({**CONTROLLER.status(), "ai_editor": AI_EDITOR.status(CONTROLLER.run_dir)})
+            self.send_json({**CONTROLLER.status(), "ai_editor": AI_EDITOR.status(None if CONTROLLER.opened_view() else CONTROLLER.run_dir)})
+        elif parsed.path == "/api/model-edit/preview":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                path = MODEL_EDITS.preview(query.get("session", [""])[0])
+                stream = path.open("rb")
+            except (ValueError, OSError):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            with stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "model/gltf-binary")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(os.fstat(stream.fileno()).st_size))
+                self.end_headers()
+                shutil.copyfileobj(stream, self.wfile, 1024 * 1024)
         elif parsed.path == "/api/examples":
             self.send_json({"runs": existing_runs.list_runs()})
         elif parsed.path == "/api/assistant/job":
@@ -1520,14 +2021,14 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/lego-detail":
             try:
                 query = urllib.parse.parse_qs(parsed.query)
-                model = ui_lego_details.model_path(query.get("path", [""])[0], ROOT)
+                model = lego_model_path(query.get("path", [""])[0])
                 self.send_json(ui_lego_details.describe(model, ldraw_available=(LDRAW_ROOT / "parts").is_dir() and (LDRAW_ROOT / "LDConfig.ldr").is_file()))
             except (ValueError, OSError) as exc:
                 self.send_json({"error": str(exc)}, status=400)
         elif parsed.path == "/api/lego-instructions":
             try:
                 query = urllib.parse.parse_qs(parsed.query)
-                model = ui_lego_details.model_path(query.get("path", [""])[0], ROOT)
+                model = lego_model_path(query.get("path", [""])[0])
                 self.send_json(INSTRUCTIONS.status(model))
             except (ValueError, OSError) as exc:
                 self.send_json({"error": str(exc)}, status=400)
@@ -1539,7 +2040,10 @@ class Handler(BaseHTTPRequestHandler):
             except (KeyError, IndexError, ValueError):
                 self.send_json({"error": "缺少有效的运行目录或 Stud 尺寸"}, status=400)
                 return
-            if not within_root(run_dir) or not run_dir.is_dir() or studs < 1 or studs > 10000:
+            folder = opened_folder_for(run_dir)
+            permitted = (run_dir == folder or ui_result_folders.branch_parent(run_dir, folder) is not None
+                         if folder is not None else within_root(run_dir))
+            if not permitted or not run_dir.is_dir() or studs < 1 or studs > 10000:
                 self.send_json({"error": "无效的运行目录或 Stud 尺寸"}, status=400)
                 return
             original = run_dir / f"lego-{studs}" / "model.mpd"
@@ -1595,7 +2099,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(path.stat().st_size))
-            self.send_header("Content-Disposition", f'inline; filename="{path.name}"')
+            disposition = "attachment" if path.suffix.lower() in {".html", ".svg", ".js"} else "inline"
+            self.send_header("Content-Disposition", f"{disposition}; filename*=UTF-8''{urllib.parse.quote(path.name)}")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            if disposition == "attachment":
+                self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
             self.end_headers()
             with path.open("rb") as stream:
                 while chunk := stream.read(1024 * 1024):
@@ -1605,8 +2113,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         try:
+            if self.path == "/api/model-edit/bridge-open":
+                try:
+                    model_edit_bridge.authorize_upload(self.headers.get("Authorization", ""))
+                except PermissionError as exc:
+                    self.send_json({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+                    return
+                if self.headers.get_content_type() != "model/gltf-binary":
+                    raise ValueError("请上传二进制 GLB")
+                self.connection.settimeout(60)
+                length = int(self.headers.get("Content-Length", "0"))
+                self.send_json(MODEL_EDITS.open_uploaded(self.rfile, length))
+                return
             data = self.read_json()
-            if THREE_D.is_running() and self.path in {"/api/start", "/api/ai-edit/start", "/api/assistant/chat"}:
+            if CONTROLLER.opened_view() is not None and self.path in {
+                "/api/revision/upload", "/api/revision/choose", "/api/revision/load-version", "/api/assistant/chat",
+                "/api/ai-edit/start", "/api/ai-edit/accept", "/api/ai-edit/reset", "/api/ai-edit/resume",
+                "/api/ai-edit/select-generated",
+            }:
+                raise ValueError("当前成果以只读方式打开")
+            if THREE_D.is_running() and self.path in {"/api/start", "/api/stage-action", "/api/ai-edit/start", "/api/assistant/chat"}:
                 raise RuntimeError("3D 文件流水线正在运行，请先等待或停止")
             if self.path.startswith('/api/ar/'):
                 origin = self.headers.get('Origin')
@@ -1649,8 +2175,34 @@ class Handler(BaseHTTPRequestHandler):
                     raise RuntimeError("3D 模型编辑正在运行")
                 CONTROLLER.start(data)
                 self.send_json({"ok": True})
+            elif self.path == "/api/stage-action":
+                if AI_EDITOR.is_running():
+                    raise RuntimeError("3D 模型编辑正在运行")
+                origin = self.headers.get("Origin")
+                if origin and urllib.parse.urlparse(origin).netloc != self.headers.get("Host"):
+                    raise ValueError("请从当前工作台执行阶段操作")
+                CONTROLLER.start_stage(data)
+                self.send_json({"ok": True})
+            elif self.path == "/api/lego-verify":
+                if THREE_D.is_running():
+                    raise RuntimeError("3D 文件流水线正在运行，请先等待或停止")
+                if AI_EDITOR.is_running():
+                    raise RuntimeError("3D 模型编辑正在运行")
+                origin = self.headers.get("Origin")
+                if origin and urllib.parse.urlparse(origin).netloc != self.headers.get("Host"):
+                    raise ValueError("请从当前 UI 验证模型")
+                run_dir = Path(str(data.get("run_dir", ""))).expanduser().resolve()
+                CONTROLLER.verify_lego(run_dir, int(str(data.get("studs", ""))), str(data.get("model_id", "")))
+                self.send_json({"ok": True})
+            elif self.path.startswith("/api/model-edit/"):
+                self.handle_model_edit(self.path.rsplit("/", 1)[-1], data)
             elif self.path == "/api/load-run":
-                CONTROLLER.load_run(Path(str(data.get("run_dir", ""))).expanduser())
+                origin = self.headers.get("Origin")
+                if origin and urllib.parse.urlparse(origin).netloc != self.headers.get("Host"):
+                    raise ValueError("请从当前 UI 打开成果文件夹")
+                if AI_EDITOR.is_running():
+                    raise RuntimeError("3D 编辑正在运行，不能切换成果文件夹")
+                CONTROLLER.load_run(ui_result_folders.parse_folder(str(data.get("run_dir", ""))))
                 self.send_json({"ok": True})
             elif self.path == "/api/stop":
                 CONTROLLER.stop()
@@ -1690,17 +2242,17 @@ class Handler(BaseHTTPRequestHandler):
                 AI_EDITOR.resume(CONTROLLER.run_dir)
                 self.send_json({"ok": True})
             elif self.path == "/api/lego-bom":
-                model = ui_lego_details.model_path(str(data.get("path", "")), ROOT)
+                model = lego_model_path(str(data.get("path", "")))
                 bom = ui_lego_details.generate_bom(model, LEGO_PYTHON, LDRAW_ROOT)
                 self.send_json({"bom": bom})
             elif self.path == "/api/lego-bom-export":
-                model = ui_lego_details.model_path(str(data.get("path", "")), ROOT)
+                model = lego_model_path(str(data.get("path", "")))
                 pdf = ui_parts_pdf.export_pdf(model, LEGO_PYTHON, LDRAW_ROOT, ROOT,
                                               str(data.get("source_sha256", "")), data.get("thumbnails", {}),
                                               str(data.get("title", "LEGO 模型")))
                 self.send_json({"url": "/file?" + urllib.parse.urlencode({"path": str(pdf)})})
             elif self.path == "/api/lego-instructions":
-                model = ui_lego_details.model_path(str(data.get("path", "")), ROOT)
+                model = lego_model_path(str(data.get("path", "")))
                 self.send_json(INSTRUCTIONS.start(model, str(data.get("title", "LEGO 模型"))))
             elif self.path == "/api/upload":
                 if CONTROLLER.is_running() or AI_EDITOR.is_running():
@@ -1734,28 +2286,34 @@ class Handler(BaseHTTPRequestHandler):
                 raw = base64.b64decode(str(data.get("data", "")), validate=True)
                 if len(raw) > 20 * 1024 * 1024:
                     raise ValueError("修改版文件不能超过 20 MB")
-                result = ui_revisions.add_candidate(run_dir, relative, str(data.get("name", "")), raw, ROOT)
+                result = CONTROLLER.upload_revision(run_dir, relative, str(data.get("name", "")), raw)
                 self.send_json({"ok": True, **result})
+            elif self.path == "/api/revision/load-version":
+                run_dir = Path(str(data.get("run_dir", ""))).resolve()
+                selected = CONTROLLER.load_stage_version(run_dir, str(data.get("relative", "")), str(data.get("path", "")))
+                self.send_json({"ok": True, "selected_path": str(selected)})
             elif self.path == "/api/revision/choose":
                 run_dir = Path(str(data.get("run_dir", ""))).resolve()
                 relative = str(data.get("relative", ""))
                 choice = str(data.get("choice", ""))
                 if not run_dir.is_dir() or not within_root(run_dir):
                     raise ValueError("无效的运行目录")
-                if relative in {"input/foreground.png", "unitex/mv_rgb.png"} and choice == "candidate":
-                    with CONTROLLER.lock:
-                        if CONTROLLER.process is not None and CONTROLLER.process.poll() is None:
-                            raise RuntimeError("流水线正在运行，不能切换到修改版")
+                with CONTROLLER.lock:
+                    if CONTROLLER.worker_active:
+                        raise RuntimeError("阶段任务正在运行，不能切换采用的版本")
                 texture_input = None
                 texture_shape = None
+                historical_sheet = None
                 if relative == "unitex/mv_rgb.png" and choice == "candidate":
                     try:
-                        texture_input = ui_revisions.available_artifact(
-                            run_dir, "input/foreground.png", ROOT
-                        )
-                        texture_shape = ui_revisions.available_artifact(
-                            run_dir, "hunyuan/mesh_shape_review_clean.glb", ROOT
-                        )
+                        console = stage_console.Console(run_dir, CONTROLLER.image, ROOT)
+                        historical_sheet = console.asset(stage_console.SHEET)
+                        if historical_sheet and historical_sheet.version_owner:
+                            inputs = console.inputs("texture")
+                            texture_input, texture_shape = inputs[stage_console.FOREGROUND], inputs[stage_console.SHAPE]
+                        else:
+                            texture_input = ui_revisions.available_artifact(run_dir, stage_console.FOREGROUND, ROOT, adopted=True)
+                            texture_shape = ui_revisions.available_artifact(run_dir, stage_console.SHAPE, ROOT, adopted=True)
                     except ValueError as exc:
                         raise ValueError("要继续六视图修改版，原运行目录须有透明底输入和无色模型")
                 record = ui_revisions.choose(run_dir, relative, choice, ROOT)
@@ -1774,10 +2332,13 @@ class Handler(BaseHTTPRequestHandler):
                     shape = texture_shape
                     sheet = Path(str(record["candidate"]))
                     branch = ui_revisions.create_texture_branch(run_dir, sheet, image, shape, ROOT)
-                    ui_revisions.register_generated_pair(
-                        branch, relative, Path(str(record["original"])), sheet, ROOT
-                    )
-                    ui_revisions.choose(branch, relative, "candidate", ROOT)
+                    if historical_sheet and historical_sheet.version_owner:
+                        ui_revisions.select_version(branch, relative, sheet, historical_sheet.version_owner)
+                    else:
+                        ui_revisions.register_generated_pair(
+                            branch, relative, Path(str(record["original"])), sheet, ROOT
+                        )
+                        ui_revisions.choose(branch, relative, "candidate", ROOT)
                     CONTROLLER.activate_branch(branch, image)
                 self.send_json(response)
             elif self.path == "/api/assistant/chat":
@@ -1836,9 +2397,55 @@ class Handler(BaseHTTPRequestHandler):
         if run_dir is None:
             raise ValueError("请先选择一个已有运行目录")
         with CONTROLLER.lock:
-            if CONTROLLER.process is not None and CONTROLLER.process.poll() is None:
+            if CONTROLLER.worker_active:
                 raise RuntimeError("流水线正在运行，请在当前阶段结束后修改")
         return ASSISTANT_JOBS.submit(run_dir, tool, args)
+
+    def handle_model_edit(self, action: str, data: dict) -> None:
+        origin = self.headers.get("Origin")
+        if origin and urllib.parse.urlparse(origin).netloc != self.headers.get("Host"):
+            raise ValueError("请从当前工作台修改模型")
+        token = str(data.get("session", ""))
+        if action == "status":
+            result = MODEL_EDITS.status(token)
+        elif action == "close":
+            MODEL_EDITS.close(token)
+            result = {"ok": True}
+        elif action == "edit":
+            if THREE_D.is_running() or CONTROLLER.is_running():
+                raise RuntimeError("请先等待当前生成任务完成")
+            result = MODEL_EDITS.edit(token, str(data.get("instruction", "")))
+        elif action == "check":
+            result = MODEL_EDITS.check(token)
+        elif action == "save":
+            with MODEL_EDITS.lock:
+                result = MODEL_EDITS.save(token, str(data.get("name", "")))
+                ui_run_state.mark_changed(MODEL_EDITS.get(token).run, ROOT)
+        elif action in {"open", "delete"}:
+            with CONTROLLER.lock:
+                run = CONTROLLER.run_dir
+                if run is None or not within_root(run) or CONTROLLER.opened_view() or str(run) != data.get("run_dir"):
+                    raise ValueError("请在当前成果中打开彩色模型")
+                model_id = str(data.get("model_id", ""))
+                public = ui_revisions.root_run_dir(run, ROOT)
+                if action == "delete":
+                    CONTROLLER._require_idle()
+                    model, _ = model_editing.saved_model(public, model_id)
+                    shutil.rmtree(model.parent)
+                    ui_run_state.mark_changed(public, ROOT)
+                    result = {"ok": True}
+                else:
+                    if model_id:
+                        model, name = model_editing.saved_model(public, model_id)
+                    else:
+                        asset = stage_console.Console(run, CONTROLLER.image, ROOT).asset(stage_console.COLOR)
+                        if asset is None:
+                            raise ValueError("找不到彩色模型")
+                        model, name = asset.file, "UniTEX 彩色模型"
+                    result = MODEL_EDITS.open(public, model, name)
+        else:
+            raise ValueError("未知的模型编辑操作")
+        self.send_json(result)
 
 
 def main() -> None:
@@ -1852,11 +2459,16 @@ def main() -> None:
         os.environ['PIPELINE_UI_DEFAULT_MODE'] = args.mode
     if args.run_dir is not None:
         run_dir = args.run_dir.resolve()
-        if not run_dir.is_dir() or not within_root(run_dir):
-            parser.error("--run-dir 必须是项目内已有的运行目录")
-        CONTROLLER.load_run(run_dir)
+        try:
+            CONTROLLER.load_run(run_dir)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
     elif CONTROLLER.run_dir is not None and CONTROLLER.run_dir.is_dir():
-        CONTROLLER.load_run(CONTROLLER.run_dir)
+        try:
+            CONTROLLER.load_run(ui_revisions.root_run_dir(CONTROLLER.run_dir, ROOT))
+        except (OSError, ValueError) as exc:
+            CONTROLLER.run_dir = None
+            CONTROLLER.message = str(exc)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     url = f"http://127.0.0.1:{args.port}"
     if args.mode:

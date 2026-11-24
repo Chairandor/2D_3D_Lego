@@ -31,6 +31,7 @@ class _Response:
         return self.payload if size < 0 else self.payload[:size]
 
 
+@mock.patch.dict("os.environ", {"ASSISTANT_RELAY_MODEL": "", "ASSISTANT_IMAGE_RELAY_MODEL": ""})
 class AssistantTests(unittest.TestCase):
     def test_image_output_size_follows_api_rounding(self) -> None:
         self.assertEqual(ui_agent_jobs._image_output_size((312, 312)), (512, 512))
@@ -102,7 +103,10 @@ class AssistantTests(unittest.TestCase):
                 "name": "run_lego_skill",
                 "arguments": json.dumps({"skill": "analyze-lego-assembly"}),
             }}]}
-            with mock.patch.object(ui_assistant, "_qwen", return_value=answer):
+            with (
+                mock.patch.object(ui_assistant, "relay_model", return_value=""),
+                mock.patch.object(ui_assistant, "_qwen", return_value=answer),
+            ):
                 result = ui_assistant.chat(
                     run_dir=Path(temporary), mode="stage", value="lego",
                     message="检查稳定性", history=[],

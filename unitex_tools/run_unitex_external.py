@@ -243,6 +243,28 @@ def copy_outputs(cache: Path, output: Path) -> None:
             shutil.copy2(source, output / filename)
 
 
+def install_direct_knn_fallback() -> None:
+    try:
+        import torch_kdtree  # noqa: F401 - native backend when installed
+        return
+    except ModuleNotFoundError as exc:
+        if exc.name != "torch_kdtree":
+            raise
+
+    from scipy.spatial import cKDTree
+    from TextureTools.texturetools.render.nvdiffrast import renderer_inverse
+
+    def nearest(src, dst, k=1, batch_size=None):
+        # Request a sequence of ranks so k=1 still returns shape (n, 1).
+        tree = cKDTree(src.detach().cpu().numpy())
+        scores, indices = tree.query(dst.detach().cpu().numpy(), k=list(range(1, k + 1)), workers=4)
+        return (torch.as_tensor(scores, device=dst.device, dtype=torch.float32),
+                torch.as_tensor(indices, device=dst.device, dtype=torch.int64))
+
+    renderer_inverse.knn = nearest
+    print("Direct projection: using SciPy nearest-neighbour fallback", flush=True)
+
+
 def main() -> None:
     args = parse_args()
     repo = args.repo.resolve()
@@ -292,6 +314,8 @@ def main() -> None:
         )
         if os.environ.get("UNITEX_RAY_BACKEND", "").lower() == "open3d":
             install_open3d_ray_backend()
+        if args.projection == "direct":
+            install_direct_knn_fallback()
         runner = upstream.RGBTextureFullPipeline(
             super_resolutions=False,
             filt_gradient_points=False,

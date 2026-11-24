@@ -61,11 +61,14 @@ def _relative(path: Path, public: Path) -> str:
     return Path(os.path.relpath(path.resolve(), public.resolve())).as_posix()
 
 
-def active_run(public: Path, root: Path) -> Path | None:
+def active_run(public: Path, root: Path, *, read_only: bool = False) -> Path | None:
     public = _public(public, root)
     path = public / STATE_FILE
-    with ui_revisions._state_file_lock(path):
-        data = _read(path)
+    if read_only:
+        data = _read(_path(path.name, public, root))
+    else:
+        with ui_revisions._state_file_lock(path):
+            data = _read(path)
     if data is None:
         return None
     active = _path(data["active_run"], public, root)
@@ -115,11 +118,14 @@ def save_view(run: Path, root: Path, groups: list, pipeline_state: dict) -> None
                       "artifact_groups": encoded, "pipeline_state": pipeline_state})
 
 
-def load_view(run: Path, root: Path) -> dict | None:
+def load_view(run: Path, root: Path, *, read_only: bool = False) -> dict | None:
     public = _public(run, root)
     path = public / STATE_FILE
-    with ui_revisions._state_file_lock(path):
-        data = _read(path)
+    if read_only:
+        data = _read(_path(path.name, public, root))
+    else:
+        with ui_revisions._state_file_lock(path):
+            data = _read(path)
     if data is None or data.get("needs_refresh") or data["active_run"] != _relative(run, public):
         return None
     if not isinstance(data.get("artifact_groups"), list) or not isinstance(data.get("pipeline_state"), dict):
@@ -133,6 +139,10 @@ def load_view(run: Path, root: Path) -> dict | None:
             if not source.is_file():
                 raise ValueError(f"当前状态中的产物已丢失：{source}；不会自动换成初版")
             item["url"] = "/file?" + urllib.parse.urlencode({"path": str(source)})
+            if read_only and item.get("comparison_url") and source.parent.name.startswith("lego-"):
+                item["comparison_url"] = "/compare?" + urllib.parse.urlencode({
+                    "run_dir": str(source.parent.parent), "studs": item.get("studs", 0),
+                })
             item["size"] = source.stat().st_size
             item["mtime_ns"] = source.stat().st_mtime_ns
     return data

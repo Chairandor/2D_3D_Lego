@@ -11,6 +11,7 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageFilter
 
 import ui_revisions
+import ui_result_folders
 
 POLICY = "six-view-colour-only/v1"
 RULES = (
@@ -94,16 +95,24 @@ class SixViewReference:
         }
 
 
-def _source_run(run_dir: Path, root: Path) -> Path:
+def _source_run(run_dir: Path, root: Path, *, follow_selection: bool) -> Path:
     current = run_dir.resolve()
     root = root.resolve()
     seen: set[Path] = set()
-    for _ in range(32):
-        if current in seen or not current.is_relative_to(root):
-            break
+    while current not in seen and current.is_relative_to(root):
         seen.add(current)
+        if follow_selection:
+            selected = ui_revisions.selected_version(current, "unitex/mv_rgb.png", root)
+            if selected:
+                follow_selection = False
+                owner = Path(selected["owner"])
+                if owner != current:
+                    current = owner
+                    seen.discard(owner)
+                    continue
         stage = ui_revisions.branch_start_stage(current, root)
-        if stage != "texture":
+        console_sheets = ui_result_folders.read_json(current / "ui_stage_dependencies.json", root)
+        if stage != "texture" or "unitex/mv_rgb.png" in console_sheets:
             if (current / "unitex/mv_rgb.png").is_file():
                 return current
             # A new input/geometry has its own silhouette. Never borrow the
@@ -117,9 +126,9 @@ def _source_run(run_dir: Path, root: Path) -> Path:
     raise ValueError("找不到最初版本的六视图，已拒绝修改")
 
 
-def resolve_reference(run_dir: Path, root: Path) -> SixViewReference:
+def resolve_reference(run_dir: Path, root: Path, *, follow_selection: bool = True) -> SixViewReference:
     """Freeze the native sheet/mask once; all texture descendants share it."""
-    owner = _source_run(run_dir, root)
+    owner = _source_run(run_dir, root, follow_selection=follow_selection)
     directory = owner / ui_revisions.REVISION_DIR / "six_view_reference"
     directory.mkdir(parents=True, exist_ok=True)
     metadata_path = directory / "reference.json"
@@ -160,10 +169,10 @@ def constrain_candidate(run_dir: Path, content: bytes, root: Path) -> tuple[byte
     return stream.getvalue(), report
 
 
-def validate_candidate(run_dir: Path, content: bytes, root: Path) -> dict:
+def validate_candidate(run_dir: Path, content: bytes, root: Path, *, follow_selection: bool = True) -> dict:
     """Check adoption too, including old candidates produced before this policy."""
     proposed = _load_image(content)
-    locked, report = resolve_reference(run_dir, root).lock(proposed)
+    locked, report = resolve_reference(run_dir, root, follow_selection=follow_selection).lock(proposed)
     rgb_changed = ImageChops.difference(proposed.convert("RGB"), locked.convert("RGB")).getbbox()
     alpha_changed = ImageChops.difference(
         proposed.convert("RGBA").getchannel("A"), locked.convert("RGBA").getchannel("A")

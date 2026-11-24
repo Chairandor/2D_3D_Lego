@@ -13,7 +13,7 @@ def execute(reference: Path, shape: Path, output_dir: Path, *, root: Path,
             remote_root: str, steps: int, seed: int, projection: str,
             gpu_index: int, phase: str, force: bool, run,
             six_view_override: Path | None = None,
-            cache_run_dir: Path | None = None) -> Path | None:
+            cache_run_dir: Path | None = None, require_stage1_cache: bool = False) -> Path | None:
     if phase not in {"stage1", "project"}:
         raise ValueError("Unknown UniTEX phase")
     resources = Path(remote_root).expanduser().resolve()
@@ -46,14 +46,18 @@ def execute(reference: Path, shape: Path, output_dir: Path, *, root: Path,
              "--projection", projection, "--steps", str(steps), "--seed", str(seed),
              "--reference-mode", "rgba"], cwd=root, env=env)
 
+    rebuilt = False
     if phase == "project" and not complete(cache):
         source = cache_run_dir.resolve() / "unitex/cache" if cache_run_dir is not None else None
         if source and source.resolve() != cache.resolve() and complete(source):
             shutil.copytree(source, cache, dirs_exist_ok=True)
             print("reuse original UniTEX cache in a separate local branch", flush=True)
+        elif require_stage1_cache:
+            raise ValueError("当前六视图缓存不可用，请先生成六视图")
         else:
             print("local UniTEX cache missing; rebuilding stage-1", flush=True)
             invoke("stage1")
+            rebuilt = True
         if not complete(cache):
             raise RuntimeError("UniTEX stage-1 did not produce a complete projection cache")
 
@@ -61,6 +65,12 @@ def execute(reference: Path, shape: Path, output_dir: Path, *, root: Path,
         override = six_view_override.resolve()
         if not override.is_file() or override.suffix.lower() != ".png":
             raise ValueError("UniTEX six-view replacement must be an existing PNG")
+        if rebuilt:
+            from PIL import Image
+
+            with Image.open(override) as selected, Image.open(cache / "mv_rgb.png") as cached:
+                if selected.size != cached.size:
+                    raise ValueError("所选六视图的尺寸与投影缓存不一致，请先用当前网格生成六视图")
         for destination in (cache / "mv_rgb.png", output_dir / "mv_rgb.png"):
             if override != destination.resolve():
                 shutil.copy2(override, destination)

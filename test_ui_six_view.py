@@ -57,6 +57,7 @@ class _Response:
     def read(self, size=-1): return self.payload if size < 0 else self.payload[:size]
 
 
+@mock.patch.dict("os.environ", {"ASSISTANT_RELAY_MODEL": "", "ASSISTANT_IMAGE_RELAY_MODEL": ""})
 class SixViewTests(unittest.TestCase):
     def test_full_redraw_restores_every_boundary_background_and_alpha_pixel(self):
         for rgba in (False, True):
@@ -217,9 +218,36 @@ class SixViewTests(unittest.TestCase):
 
     def test_chat_receives_six_view_colour_only_policy(self):
         observed = []
-        with mock.patch.object(ui_assistant, "_qwen", side_effect=lambda payload: observed.append(payload) or {"content": "只修颜色"}):
+        with (
+            mock.patch.object(ui_assistant, "relay_model", return_value=""),
+            mock.patch.object(
+                ui_assistant, "_qwen",
+                side_effect=lambda payload: observed.append(payload) or {"content": "只修颜色"},
+            ),
+        ):
             ui_assistant.chat(run_dir=None, mode="stage", value="texture", message="修颜色", history=[], dispatch=lambda *args: {})
         self.assertIn(ui_six_view.RULES, observed[0]["messages"][0]["content"])
+
+    def test_relay_six_view_rejects_resize_and_keeps_protected_pixels(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            root = Path(temporary)
+            original, _ = write_six_view(root, size=(768, 512))
+            reference = ui_six_view.resolve_reference(root, ROOT)
+            source = root / "unitex/mv_rgb.png"
+            with (
+                mock.patch.object(ui_agent_jobs, "image_relay_model", return_value="image-model"),
+                mock.patch.object(ui_agent_jobs, "image_relay_available", return_value=True),
+                mock.patch.object(ui_agent_jobs, "_relay_image", side_effect=[
+                    sheet_bytes(size=(512, 512)),
+                    sheet_bytes((0, 255, 0), size=original.size),
+                ]),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "贴图错位"):
+                    ui_agent_jobs._image_edit(source, "修颜色", "unitex/mv_rgb.png", reference=reference)
+                content = ui_agent_jobs._image_edit(source, "修颜色", "unitex/mv_rgb.png", reference=reference)
+            self.assertEqual(ui_six_view.validate_candidate(root, content, ROOT)["protected_pixels_changed"], 0)
+            with Image.open(io.BytesIO(content)) as result:
+                self.assertEqual(result.getpixel((10, 10)), (0, 255, 0))
 
 
 if __name__ == "__main__":

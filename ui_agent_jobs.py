@@ -1,4 +1,4 @@
-"""Bounded, non-destructive jobs offered to the pipeline's Qwen assistant."""
+"""Bounded jobs offered to the pipeline's stage assistant."""
 
 from __future__ import annotations
 
@@ -18,8 +18,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageOps
 
+import assistant_relay
 import ui_revisions
 import proxe_integration as proxe
 import ui_six_view
@@ -82,6 +83,69 @@ def _image_endpoint() -> str:
     return base.removesuffix("/compatible-mode/v1") + "/api/v1/services/aigc/multimodal-generation/generation"
 
 
+def image_relay_model() -> str:
+    return os.environ.get("ASSISTANT_IMAGE_RELAY_MODEL", "").strip()
+
+
+def image_relay_available() -> bool:
+    return bool(image_relay_model() and os.environ.get("ASSISTANT_IMAGE_RELAY_API_KEY", "").strip())
+
+
+def _relay_image(image: bytes, prompt: str, size: tuple[int, int]) -> bytes:
+    base = assistant_relay.base_url()
+    boundary = secrets.token_hex(20)
+    fields = {
+        "model": image_relay_model(), "prompt": prompt, "size": f"{size[0]}x{size[1]}",
+        "n": "1", "output_format": "png", "quality": "low",
+    }
+    parts = [
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode("utf-8")
+        for name, value in fields.items()
+    ]
+    parts.extend([
+        (f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="input.png"\r\n'
+         "Content-Type: image/png\r\n\r\n").encode("ascii"),
+        image, f"\r\n--{boundary}--\r\n".encode("ascii"),
+    ])
+    request = urllib.request.Request(
+        base + "/images/edits", data=b"".join(parts), method="POST",
+        headers={
+            "Authorization": "Bearer " + os.environ["ASSISTANT_IMAGE_RELAY_API_KEY"].strip(),
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "User-Agent": assistant_relay.USER_AGENT,
+        },
+    )
+    opener = urllib.request.build_opener(assistant_relay.NoRedirect())
+    limit = 20 * 1024 * 1024
+    try:
+        with opener.open(request, timeout=300) as response:
+            json_limit = (limit + 2) // 3 * 4 + 64 * 1024
+            body = response.read(json_limit + 1)
+        if len(body) > json_limit:
+            raise RuntimeError("图像编辑中转站返回内容过大")
+        result = json.loads(body)
+        item = result["data"][0]
+        encoded = item.get("b64_json")
+        if isinstance(encoded, str) and encoded:
+            raw = base64.b64decode(encoded, validate=True)
+        else:
+            url = urllib.parse.urlsplit(item.get("url", ""))
+            if (url.scheme != "https" or url.netloc != urllib.parse.urlsplit(base).netloc
+                    or not url.path.startswith("/")):
+                raise RuntimeError("图像编辑中转站未返回图片数据或本站图片地址")
+            with opener.open(url.geturl(), timeout=90) as response:
+                raw = response.read(limit + 1)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"图像编辑中转站请求失败（HTTP {exc.code}）") from exc
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+        raise RuntimeError("无法连接图像编辑中转站，或请求超时") from exc
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as exc:
+        raise RuntimeError("图像编辑中转站未返回有效的图片数据") from exc
+    if len(raw) > limit:
+        raise RuntimeError("生成图片超过 20 MB")
+    return raw
+
+
 def _image_output_size(size: tuple[int, int]) -> tuple[int, int]:
     """Choose an API-supported output size without rejecting a small input image."""
     pixels = size[0] * size[1]
@@ -100,6 +164,50 @@ def _image_output_size(size: tuple[int, int]) -> tuple[int, int]:
     return tuple(max(16, math.floor(side * scale / 16) * 16) for side in size)
 
 
+def _dashscope_image(image: bytes, prompt: str, size: tuple[int, int]) -> bytes:
+    encoded = base64.b64encode(image).decode("ascii")
+    payload = {
+        "model": os.environ.get("DASHSCOPE_IMAGE_MODEL", "qwen-image-2.1-pro"),
+        "input": {"messages": [{"role": "user", "content": [
+            {"image": "data:image/png;base64," + encoded}, {"text": prompt},
+        ]}]},
+        "parameters": {"size": f"{size[0]}*{size[1]}", "n": 1,
+                       "watermark": False, "prompt_extend": False},
+    }
+    request = urllib.request.Request(
+        _image_endpoint(),
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": "Bearer " + _safe_key(), "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"千问图像编辑请求失败（HTTP {exc.code}）") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError("无法连接千问图像编辑服务") from exc
+    choices = result.get("output", {}).get("choices", [])
+    content = choices[0].get("message", {}).get("content", []) if choices else []
+    url = content[0].get("image") if content and isinstance(content[0], dict) else None
+    if not isinstance(url, str):
+        raise RuntimeError("图像编辑 API 未返回可下载的图片")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".aliyuncs.com"):
+        raise RuntimeError("图像编辑 API 返回了不可信的图片地址")
+    with urllib.request.urlopen(url, timeout=90) as response:
+        raw = response.read(20 * 1024 * 1024 + 1)
+    if len(raw) > 20 * 1024 * 1024:
+        raise RuntimeError("生成图片超过 20 MB")
+    return raw
+
+
+def _png_bytes(image: Image.Image) -> bytes:
+    stream = io.BytesIO()
+    image.save(stream, format="PNG")
+    return stream.getvalue()
+
+
 def _image_edit(
     source: Path, instruction: str, target: str,
     *, reference: ui_six_view.SixViewReference | None = None,
@@ -107,86 +215,68 @@ def _image_edit(
     if not 1 <= len(instruction.strip()) <= 1000:
         raise ValueError("图片修改要求必须为 1–1000 字")
     if source.stat().st_size > 10 * 1024 * 1024:
-        raise ValueError("百炼图像编辑要求输入图片不超过 10 MB")
+        raise ValueError("图像编辑要求输入图片不超过 10 MB")
+    relay = bool(image_relay_model() or os.environ.get("ASSISTANT_RELAY_MODEL", "").strip())
+    if relay and not image_relay_available():
+        raise RuntimeError("阶段助手中转站尚未配置自动改图")
     with Image.open(source) as original:
         original.load()
         size = original.size
-        output_size = _image_output_size(size)
+        output_size = size if relay else _image_output_size(size)
+        crop = None
         if target == "input/foreground.png":
             prompt = (
                 "编辑这张透明底主体素材：" + instruction +
                 "。保持透明背景、主体朝向和位置；不要新增背景、投影、文字或水印。"
             )
+            image_data = source.read_bytes()
+            if relay:
+                # The relay may return a different resolution for the same aspect
+                # ratio. Pad on a square and record where the real image lies.
+                side = 1024 if max(size) <= 1024 else 1536
+                output_size = (side, side)
+                fitted = ImageOps.contain(original.convert("RGBA"), output_size, Image.Resampling.LANCZOS)
+                left, top = (side - fitted.width) // 2, (side - fitted.height) // 2
+                crop = (left, top, left + fitted.width, top + fitted.height)
+                frame = Image.new("RGBA", output_size)
+                frame.paste(fitted, (left, top))
+                image_data = _png_bytes(frame)
         else:
             if reference is None:
                 raise ValueError("六视图修改必须提供最初版本的固定蒙版")
             if output_size != size:
                 raise ValueError("当前六视图尺寸无法由图像 API 原尺寸返回，已拒绝自动缩放")
-            original, _ = reference.lock(original)
+            locked, _ = reference.lock(original)
+            image_data = _png_bytes(locked)
             prompt = (
                 "这是同一 3D 模型固定六相机视角的 3x2 贴图网格。" + instruction +
                 "。" + ui_six_view.RULES
             )
-        if target == "unitex/mv_rgb.png":
-            locked_source = io.BytesIO()
-            original.save(locked_source, format="PNG")
-            encoded = base64.b64encode(locked_source.getvalue()).decode("ascii")
-        else:
-            encoded = base64.b64encode(source.read_bytes()).decode("ascii")
-        payload = {
-            "model": os.environ.get("DASHSCOPE_IMAGE_MODEL", "qwen-image-2.1-pro"),
-            "input": {"messages": [{"role": "user", "content": [
-                {"image": "data:image/png;base64," + encoded}, {"text": prompt},
-            ]}]},
-            "parameters": {"size": f"{output_size[0]}*{output_size[1]}", "n": 1,
-                           "watermark": False, "prompt_extend": False},
-        }
-        request = urllib.request.Request(
-            _image_endpoint(),
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Authorization": "Bearer " + _safe_key(), "Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=300) as response:
-                result = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"千问图像编辑请求失败（HTTP {exc.code}）") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError("无法连接千问图像编辑服务") from exc
-        choices = result.get("output", {}).get("choices", [])
-        content = choices[0].get("message", {}).get("content", []) if choices else []
-        url = content[0].get("image") if content and isinstance(content[0], dict) else None
-        if not isinstance(url, str):
-            raise RuntimeError("图像编辑 API 未返回可下载的图片")
-        parsed = urllib.parse.urlparse(url)
-        if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".aliyuncs.com"):
-            raise RuntimeError("图像编辑 API 返回了不可信的图片地址")
-        with urllib.request.urlopen(url, timeout=90) as response:
-            raw = response.read(20 * 1024 * 1024 + 1)
-        if len(raw) > 20 * 1024 * 1024:
-            raise RuntimeError("生成图片超过 20 MB")
+        provider = _relay_image if relay else _dashscope_image
+        raw = provider(image_data, prompt, output_size)
         with Image.open(io.BytesIO(raw)) as output:
-            output.load()
-            if output.size != output_size:
+            if crop is not None:
+                if output.width != output.height:
+                    raise RuntimeError("中转站返回的图片画幅与输入不符，已拒绝修改")
+                output = output.resize(output_size, Image.Resampling.LANCZOS).crop(crop)
+            elif output.size != output_size:
                 raise RuntimeError(f"生成图片尺寸为 {output.size}，请求的是 {output_size}；已拒绝以免贴图错位")
             if output.size != size:
                 output = output.resize(size, Image.Resampling.LANCZOS)
-            if target == "input/foreground.png":
+            if reference is not None:
+                result_image, _ = reference.lock(output)
+            else:
                 result_image = output.convert("RGBA")
                 original_alpha = original.convert("RGBA").getchannel("A")
                 alpha = output.getchannel("A") if "A" in output.getbands() else original_alpha
+                if relay and alpha.getextrema() == (255, 255):
+                    alpha = original_alpha
                 if alpha.getbbox() is None:
                     raise RuntimeError("生成图片的主体透明度为空")
-                overlap = ImageChops.multiply(alpha, original_alpha)
-                if overlap.getbbox() is None:
+                if ImageChops.multiply(alpha, original_alpha).getbbox() is None:
                     raise RuntimeError("生成图片与原主体位置完全不重合")
                 result_image.putalpha(alpha)
-            else:
-                result_image, _ = reference.lock(output)
-            stream = io.BytesIO()
-            result_image.save(stream, format="PNG")
-            return stream.getvalue()
+            return _png_bytes(result_image)
 
 
 class AgentJobManager:
@@ -255,16 +345,10 @@ class AgentJobManager:
         return self.status() or {}
 
     def _selected_path(self, run_dir: Path, relative: str) -> Path:
-        pair = ui_revisions.selected_pair(run_dir, relative, self.root)
-        if pair and pair.get("choice") in {"original", "candidate"}:
-            return Path(str(pair[str(pair["choice"])]))
-        path = run_dir / relative
-        if path.is_file():
-            return path
         try:
-            return ui_revisions.available_artifact(run_dir, relative, self.root)
+            return ui_revisions.available_artifact(run_dir, relative, self.root, adopted=True)
         except ValueError:
-            return path
+            return run_dir / relative
 
     def _set(self, ident: str, **updates: object) -> None:
         with self.lock:

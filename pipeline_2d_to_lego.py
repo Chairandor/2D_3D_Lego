@@ -32,6 +32,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from staged_lego import pending_preview, read_preview
+
 from project_config import load_project_config, venv_executable
 
 ROOT = Path(__file__).resolve().parent
@@ -124,6 +126,10 @@ def parse_args() -> argparse.Namespace:
         default="fast",
         help="brick placement strategy for `legolization build` (default fast)",
     )
+    parser.add_argument("--staged-lego", action="store_true",
+                        help="save a brick preview before checking stability")
+    parser.add_argument("--verify-lego", type=int, metavar="STUDS",
+                        help="verify and repair the saved brick preview")
     parser.add_argument(
         "--bundle",
         action="store_true",
@@ -903,6 +909,8 @@ def run_unitex_remote(
     force: bool,
     six_view_override: Path | None = None,
     cache_run_dir: Path | None = None,
+    require_stage1_cache: bool = False,
+    cache_projection: str | None = None,
 ) -> Path | None:
     """Run a resumable UniTEX phase on the configured Linux GPU host."""
     execution = os.environ.get("UNITEX_EXECUTION", "ssh")
@@ -911,7 +919,7 @@ def run_unitex_remote(
         return execute(reference, shape, output_dir, root=ROOT, remote_root=remote_root,
                        steps=steps, seed=seed, projection=projection, gpu_index=gpu_index,
                        phase=phase, force=force, run=run, six_view_override=six_view_override,
-                       cache_run_dir=cache_run_dir)
+                       cache_run_dir=cache_run_dir, require_stage1_cache=require_stage1_cache)
     if execution != "ssh":
         raise ValueError("UNITEX_EXECUTION must be local or ssh")
     # Do not pre-open the private key from Python. On managed Windows hosts the
@@ -934,7 +942,7 @@ def run_unitex_remote(
     source_output = None
     if cache_run_dir is not None:
         source_job = _unitex_job_name(
-            cache_run_dir, reference, shape, steps=steps, seed=seed, projection=projection
+            cache_run_dir, reference, shape, steps=steps, seed=seed, projection=cache_projection or projection
         )
         source_output = f"{remote_root}/pipeline-runs/{source_job}/output"
     remote_wrapper = f"{remote_job}/run_unitex_external.py"
@@ -997,6 +1005,8 @@ def run_unitex_remote(
                 f"cp -a {shlex.quote(source_output + '/cache/.')} {shlex.quote(remote_output + '/cache/')}",
             )
             print("reuse original UniTEX stage-1 cache in a separate branch", flush=True)
+        elif require_stage1_cache:
+            raise ValueError("当前六视图缓存不可用，请先生成六视图")
         else:
             print("remote UniTEX cache missing; rebuilding stage-1 before projection", flush=True)
             _remote_exec(host, key, phase_command("stage1"))
@@ -1312,6 +1322,48 @@ def _mesh_overrides(target_studs: int) -> list[str]:
     ]
 
 
+def run_legolization_preview(ply: Path, folder: Path, studs: int, bundle: bool) -> None:
+    command = [
+        str(require(LEGO_PYTHON, "legolization Python")), str(ROOT / "staged_lego.py"),
+        "place", str(folder), "--source", str(ply), *_mesh_overrides(studs),
+    ]
+    if bundle:
+        command.append("--bundle")
+    run(command, cwd=LEGO_ROOT, env=_lego_env())
+
+
+def verify_legolization_preview(run_dir: Path, studs: int) -> int:
+    if not 8 <= studs <= 128:
+        raise ValueError("LEGO 宽度必须在 8–128 Stud")
+    folder = run_dir / f"lego-{studs}"
+    state, draft = pending_preview(folder)
+    print(f"[5/5] legolization verify studs={studs}", flush=True)
+    command = [
+        str(require(LEGO_PYTHON, "legolization Python")), str(ROOT / "staged_lego.py"),
+        "verify", str(folder),
+    ]
+    try:
+        run(command, cwd=LEGO_ROOT, env=_lego_env())
+        code = 0
+    except subprocess.CalledProcessError as exc:
+        code = exc.returncode
+    verdict = read_preview(folder)
+    if not verdict or verdict["state"] == "pending":
+        return code or 1
+    record_pipeline_state(
+        run_dir, "complete" if code == 0 else "lego_unbuildable",
+        lego_model=folder / "model.mpd", lego_preview=None, target_studs=studs,
+    )
+    if code == 0 and state.get("bundle"):
+        print("[5b] 生成完整 Bundle", flush=True)
+        try:
+            run_legolization_bundle(draft / ".checkpoint/lego_input.ply",
+                                    run_dir / f"lego-{studs}-bundle", target_studs=studs, quality="fast")
+        except subprocess.CalledProcessError as exc:
+            print(f"Bundle 返回 {exc.returncode}，保留已验证的 LEGO 模型", flush=True)
+    return code
+
+
 def run_legolization_build(
     ply_path: Path,
     model_path: Path,
@@ -1410,6 +1462,10 @@ def record_pipeline_state(run_dir: Path, stage: str, **items: object) -> None:
 
 def main() -> int:
     args = parse_args()
+    if args.verify_lego is not None:
+        if args.output_dir is None:
+            raise SystemExit("--verify-lego requires --output-dir")
+        return verify_legolization_preview(args.output_dir.resolve(), args.verify_lego)
     if args.stage == "convert":
         if args.glb is None or args.ply is None:
             raise SystemExit("--stage convert needs --glb and --ply")
@@ -1637,6 +1693,13 @@ def main() -> int:
         print("[5/5] legolization is approval-gated; no bricks were built", flush=True)
         print("After reviewing oriented/mesh_upright.glb, rerun with --build-lego.", flush=True)
         summarize(run_dir, model_path=model_path, bundle_dir=bundle_dir)
+        return 0
+
+    if args.staged_lego:
+        print(f"[5/5] legolization preview studs={args.target_studs}", flush=True)
+        run_legolization_preview(ply_path, model_path.parent, args.target_studs, args.bundle)
+        record_pipeline_state(run_dir, "lego_preview", textured=textured, lego_input=ply_path,
+                              lego_model=None, target_studs=args.target_studs)
         return 0
 
     print(

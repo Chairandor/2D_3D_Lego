@@ -12,6 +12,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+import ui_result_folders
+
 
 REVISION_DIR = "ui_revisions"
 BRANCH_FILE = "ui_branch.json"
@@ -79,13 +81,16 @@ def _state_file_lock(path: Path):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def load_state(run_dir: Path) -> dict[str, object]:
+def load_state(run_dir: Path, *, read_only: bool = False) -> dict[str, object]:
     path = _state_path(run_dir)
     try:
         # On Windows an open reader can prevent os.replace() from replacing
         # state.json, so readers must use the same lock as writers.
-        with _state_file_lock(path):
-            payload = json.loads(path.read_text(encoding="utf-8"))
+        if read_only:
+            payload = ui_result_folders.read_json(path, run_dir) or {"version": 1, "pairs": {}}
+        else:
+            with _state_file_lock(path):
+                payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         if path.is_file():
             raise ValueError(f"版本选择记录读取失败：{path}；不会自动退回初版") from exc
@@ -142,20 +147,20 @@ def update_state(run_dir: Path, mutate) -> None:
 
 def branch_parent(run_dir: Path, root: Path) -> Path | None:
     try:
-        payload = json.loads((run_dir / BRANCH_FILE).read_text(encoding="utf-8"))
+        payload = ui_result_folders.read_json(run_dir / BRANCH_FILE, root)
         parent = Path(payload["parent_run_dir"]).resolve()
         if parent.is_dir() and parent != run_dir.resolve() and parent.is_relative_to(root.resolve()):
             return parent
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         pass
-    return None
+    return ui_result_folders.branch_parent(run_dir, root)
 
 
 def root_run_dir(run_dir: Path, root: Path) -> Path:
     """Return the user-facing run folder, keeping internal branches private."""
     current = run_dir.resolve()
     seen = {current}
-    for _ in range(32):
+    while True:
         parent = branch_parent(current, root)
         if parent is None or parent in seen:
             break
@@ -177,7 +182,9 @@ def remember_active_run(run_dir: Path, root: Path) -> None:
     ui_run_state.remember(run_dir, root)
 
 
-def restore_active_run(run_dir: Path, root: Path) -> Path:
+def restore_active_run(
+    run_dir: Path, root: Path, *, read_only: bool = False, old_folder: str = ""
+) -> Path:
     """Restore an adopted branch; migrate old state only when its choice is unique.
 
     Branch timestamps cannot tell us what the user accepted. Older versions
@@ -191,14 +198,14 @@ def restore_active_run(run_dir: Path, root: Path) -> Path:
     import ui_run_state
 
     if root_run_dir(run_dir, root) == run_dir:
-        recorded = ui_run_state.active_run(run_dir, root)
+        recorded = ui_run_state.active_run(run_dir, root, read_only=read_only)
         if recorded is not None:
             return recorded
-    state = load_state(run_dir)
+    state = load_state(run_dir, read_only=read_only)
     saved = state.get("active_run_dir")
     if isinstance(saved, str):
-        selected = Path(saved).resolve()
-        if selected != run_dir and selected.is_dir() and selected.is_relative_to(root) and root_run_dir(selected, root) == run_dir:
+        selected = ui_result_folders.recorded_path(saved, root, old_folder) if read_only else Path(saved).resolve()
+        if selected is not None and selected != run_dir and selected.is_dir() and selected.is_relative_to(root) and root_run_dir(selected, root) == run_dir:
             return selected
     current = run_dir
     seen = {current}
@@ -208,17 +215,18 @@ def restore_active_run(run_dir: Path, root: Path) -> Path:
             ("input/foreground.png", "input", "source_image"),
             ("unitex/mv_rgb.png", "texture", "six_view"),
         ):
-            record = selected_pair(current, relative, root)
+            record = selected_pair(current, relative, root, read_only=read_only, old_folder=old_folder)
             if record is None or record.get("choice") != "candidate":
                 continue
             selected_asset = Path(str(record["candidate"])).resolve()
             for metadata in (current / REVISION_DIR / "branches").glob(f"*/{BRANCH_FILE}"):
                 try:
-                    payload = json.loads(metadata.read_text(encoding="utf-8"))
+                    payload = ui_result_folders.read_json(metadata, root)
                     branch = metadata.parent.resolve()
                     branch_stage = "texture" if payload.get("stage") == "texture" else "input"
                     if (branch_stage == stage and branch_parent(branch, root) == current
-                            and Path(payload[field]).resolve() == selected_asset):
+                            and (ui_result_folders.recorded_path(payload[field], root, old_folder)
+                                 if read_only else Path(payload[field]).resolve()) == selected_asset):
                         matches.add(branch)
                 except (OSError, ValueError, KeyError, TypeError):
                     continue
@@ -237,7 +245,7 @@ def branch_source_image(run_dir: Path, root: Path) -> Path | None:
     if branch_start_stage(run_dir, root) != "input":
         return None
     try:
-        payload = json.loads((run_dir / BRANCH_FILE).read_text(encoding="utf-8"))
+        payload = ui_result_folders.read_json(run_dir / BRANCH_FILE, root)
         source = Path(payload["source_image"]).resolve()
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
@@ -248,19 +256,26 @@ def branch_start_stage(run_dir: Path, root: Path) -> str | None:
     if branch_parent(run_dir, root) is None:
         return None
     try:
-        payload = json.loads((run_dir / BRANCH_FILE).read_text(encoding="utf-8"))
+        payload = ui_result_folders.read_json(run_dir / BRANCH_FILE, root)
     except (OSError, ValueError, json.JSONDecodeError):
         return "input"
+    if payload.get("stage") == "generation":
+        return None
     return "texture" if payload.get("stage") == "texture" else "input"
 
 
-def available_artifact(run_dir: Path, relative: str, root: Path) -> Path:
+def available_artifact(run_dir: Path, relative: str, root: Path, *, adopted: bool = False) -> Path:
     current = run_dir.resolve()
     seen: set[Path] = set()
-    for _ in range(32):
-        if current in seen:
-            break
+    while current not in seen:
         seen.add(current)
+        if adopted:
+            record = selected_pair(current, relative, root)
+            if record:
+                return Path(str(record[record.get("choice") or "original"]))
+            version = selected_version(current, relative, root)
+            if version:
+                return Path(version["path"])
         candidate = (current / relative).resolve()
         if candidate.is_file() and candidate.is_relative_to(root.resolve()):
             return candidate
@@ -271,6 +286,37 @@ def available_artifact(run_dir: Path, relative: str, root: Path) -> Path:
     raise ValueError("找不到该阶段的原版产物")
 
 
+def remember_pair(state: dict, relative: str, record: dict | None) -> None:
+    if record and record.get("origin") in {"upload", "assistant", "restored"}:
+        versions = state.setdefault("version_history", {}).setdefault(relative, {})
+        versions[record["candidate"]] = {
+            "origin": record["origin"],
+            "owner": (record.get("six_view_lock") or {}).get("source_run_dir"),
+        }
+
+
+def selected_version(run_dir: Path, relative: str, root: Path) -> dict | None:
+    record = load_state(run_dir).get("selected_versions", {}).get(relative)
+    if record is None:
+        return None
+    path = ui_result_folders.inside(Path(record["path"]), root)
+    owner = ui_result_folders.inside(Path(record["owner"]), root)
+    if path is None or owner is None or not path.is_file() or not owner.is_dir():
+        raise ValueError(f"已加载的历史版本文件缺失：{relative}")
+    return record
+
+
+def _set_selected_version(state: dict, relative: str, path: Path, owner: Path) -> None:
+    remember_pair(state, relative, state["pairs"].pop(relative, None))
+    state.setdefault("selected_versions", {})[relative] = {
+        "path": str(path), "owner": str(owner), "selected_at": time.time_ns(),
+    }
+
+
+def select_version(run_dir: Path, relative: str, path: Path, owner: Path) -> None:
+    update_state(run_dir, lambda state: _set_selected_version(state, relative, path, owner))
+
+
 def add_candidate(
     run_dir: Path,
     relative: str,
@@ -279,6 +325,7 @@ def add_candidate(
     root: Path,
     *,
     origin: str = "upload",
+    adopt: bool = False,
 ) -> dict[str, object]:
     if origin not in {"upload", "assistant"}:
         raise ValueError("无效的修改版来源")
@@ -287,7 +334,7 @@ def add_candidate(
         raise ValueError(f"修改版必须是 {suffix} 文件")
     if not content:
         raise ValueError("修改版文件为空")
-    original = available_artifact(run_dir, relative, root)
+    original = available_artifact(run_dir, relative, root, adopted=True)
     six_view_lock = None
     if relative == "unitex/mv_rgb.png":
         from ui_six_view import constrain_candidate
@@ -300,33 +347,51 @@ def add_candidate(
     record = {
         "original": str(original),
         "candidate": str(target),
-        "choice": None,
+        "choice": "candidate" if adopt else None,
         "origin": origin,
         "created_at": time.time(),
     }
     if six_view_lock is not None:
         record["six_view_lock"] = six_view_lock
-    update_state(run_dir, lambda state: state["pairs"].__setitem__(relative, record))
-    return {"relative": relative, "candidate": str(target)}
+    def apply(state):
+        remember_pair(state, relative, record)
+        if adopt and stage_for(relative) in {"input", "geometry", "texture"}:
+            owner = Path(six_view_lock["source_run_dir"]) if six_view_lock else run_dir
+            _set_selected_version(state, relative, target, owner)
+        else:
+            remember_pair(state, relative, state["pairs"].get(relative))
+            state["pairs"][relative] = record
+
+    update_state(run_dir, apply)
+    result = {"relative": relative, "candidate": str(target)}
+    if adopt:
+        result["selected_path"] = str(target)
+    return result
 
 
-def selected_pair(run_dir: Path, relative: str, root: Path) -> dict[str, object] | None:
-    pairs = load_state(run_dir).get("pairs", {})
+def selected_pair(
+    run_dir: Path, relative: str, root: Path, *, read_only: bool = False, old_folder: str = ""
+) -> dict[str, object] | None:
+    pairs = load_state(run_dir, read_only=read_only).get("pairs", {})
     record = pairs.get(relative) if isinstance(pairs, dict) else None
     if not isinstance(record, dict):
         return None
     try:
-        original = Path(record["original"]).resolve()
-        candidate = Path(record["candidate"]).resolve()
+        if read_only:
+            original = ui_result_folders.recorded_path(record["original"], root, old_folder)
+            candidate = ui_result_folders.recorded_path(record["candidate"], root, old_folder)
+        else:
+            original = Path(record["original"]).resolve()
+            candidate = Path(record["candidate"]).resolve()
     except (KeyError, TypeError, ValueError):
         return None
-    if not all(path.is_file() and path.is_relative_to(root.resolve()) for path in (original, candidate)):
+    if not all(path is not None and path.is_file() and path.is_relative_to(root.resolve()) for path in (original, candidate)):
         if record.get("choice") in {"original", "candidate"}:
             raise ValueError(f"已选择的版本关联文件缺失或无效：{relative}；不会自动退回初版")
         return None
     if record.get("choice") not in (None, "original", "candidate"):
         return None
-    return record
+    return {**record, "original": str(original), "candidate": str(candidate)} if read_only else record
 
 
 def register_generated_pair(
@@ -337,10 +402,10 @@ def register_generated_pair(
     if not all(path.is_file() and path.is_relative_to(root.resolve()) for path in (original, candidate)):
         raise ValueError("新旧产物必须位于项目内")
     existing = selected_pair(run_dir, relative, root)
-    if existing and existing.get("origin") in {"upload", "assistant"}:
+    if existing and existing.get("origin") in {"upload", "assistant", "restored"}:
         return existing
     stamp = candidate.stat().st_mtime_ns
-    if existing and existing.get("candidate") == str(candidate) and existing.get("candidate_mtime_ns") == stamp:
+    if existing and existing.get("candidate") == str(candidate) and existing.get("candidate_mtime_ns", stamp) == stamp:
         return existing
     record = {
         "original": str(original), "candidate": str(candidate), "candidate_mtime_ns": stamp,
@@ -367,9 +432,21 @@ def choose(run_dir: Path, relative: str, choice: str, root: Path) -> dict[str, o
         if not current or current.get("candidate") != record["candidate"]:
             raise ValueError("候选已更新，请刷新后重新选择")
         current.update(record, choice=choice)
+        if choice == "candidate":
+            state.get("selected_versions", {}).pop(relative, None)
     update_state(run_dir, apply)
     record["choice"] = choice
     return record
+
+
+def create_generation_branch(run_dir: Path) -> Path:
+    ident = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
+    branch = run_dir / REVISION_DIR / "branches" / ident
+    branch.mkdir(parents=True, exist_ok=False)
+    (branch / BRANCH_FILE).write_text(json.dumps({
+        "parent_run_dir": str(run_dir.resolve()), "stage": "generation",
+    }), encoding="utf-8")
+    return branch
 
 
 def create_input_branch(run_dir: Path, image: Path, root: Path) -> Path:
@@ -420,7 +497,7 @@ def create_texture_branch(
 
 def branch_settings(run_dir: Path, root: Path) -> dict[str, str] | None:
     try:
-        payload = json.loads((run_dir / BRANCH_FILE).read_text(encoding="utf-8"))
+        payload = ui_result_folders.read_json(run_dir / BRANCH_FILE, root)
     except (OSError, ValueError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict) or payload.get("stage") != "texture":
