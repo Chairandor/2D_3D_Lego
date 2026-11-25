@@ -100,6 +100,15 @@ def load_project_config(root: Path) -> None:
         "GEMINI_LAB2_ROOT",
         "LEGOLIZER_ROOT",
         "PROCESSING3D_PYTHON",
+        "OPENMASK3D_ROOT",
+        "OPENMASK3D_PYTHON",
+        "OPENMASK3D_CHECKPOINT",
+        "OPENMASK3D_GPU",
+        "OPENMASK3D_SSH",
+        "OPENMASK3D_SSH_KEY",
+        "OPENMASK3D_JOB_ROOT",
+        "OPENMASK3D_SCENE_CATALOG",
+        "OPENMASK3D_VIEWER_URL",
         "LDRAW_LIBRARY",
     }
     for key, value in values.items():

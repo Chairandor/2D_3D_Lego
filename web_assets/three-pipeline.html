@@ -6,8 +6,9 @@
 <div id="threeWorkflow" class="grid" hidden>
 <section class="panel">
 <h2>3D 输入与转换</h2>
-<label for="threeFlow">转换路径</label><select id="threeFlow"><option value="stl">STL → LEGO · Bunny</option><option value="ply_plain">无色 PLY → Mesh → LEGO · Rhino</option><option value="ply_color">有色 PLY → Mesh / 贴图 → LEGO · Tiko</option></select>
-<label>输入文件</label><div class="fileline"><button id="threeDemo" type="button">载入默认示例</button><button id="threeChoose" type="button">选择文件</button></div><input id="threeFile" type="file" accept=".stl" hidden>
+<div id="threeExamplesRow" hidden><label for="threeExamples">示例模型</label><select id="threeExamples"></select></div>
+<label for="threeFlow">转换路径</label><select id="threeFlow"><option value="stl">STL → LEGO</option><option value="ply_plain">无色 PLY → Mesh → LEGO</option><option value="ply_color">有色 PLY → Mesh / 贴图 → LEGO</option></select>
+<label>输入文件</label><div class="fileline"><button id="threeDemo" type="button">载入示例</button><button id="threeChoose" type="button">选择文件</button></div><input id="threeFile" type="file" accept=".stl" hidden>
 <p id="threeSourceName" class="hint three-file-name">默认示例：bunny.stl</p><p id="threeFlowNote" class="hint"></p>
 <div class="three-fields">
 <div><label for="threeUnit">1 源单位 = 毫米</label><input id="threeUnit" type="number" value="1000" min="0.000000001" step="any"></div>
@@ -16,10 +17,11 @@
 <div><label for="threeColor">单色 / 备用 LDraw 色号</label><input id="threeColor" type="number" value="4" min="0" max="10000"></div>
 </div>
 <div id="threeReconstruction"><div class="three-fields"><div><label for="threeDepth">Poisson 深度</label><input id="threeDepth" type="number" value="7" min="5" max="10"></div><div><label for="threeDensity">密度过滤分位数</label><input id="threeDensity" type="number" value="0.005" min="0" max="0.2" step="0.001"></div></div></div>
+<div id="threeTextureExposure" hidden><label for="threeExposure">LEGO 取色曝光（档）</label><input id="threeExposure" type="number" placeholder="默认（Tiko +1.35，其他 0）" min="-3" max="3" step="0.05"><p class="hint">曝光只应用于砖色匹配，导出的 PNG 保留原点云颜色。</p></div>
 <div class="three-fields"><div><label for="threeQuality">后端求解策略</label><select id="threeQuality"><option value="direct">单策略（推荐）</option><option value="fast">多候选快速</option><option value="balanced">多候选均衡</option></select></div><div><label for="threeDuration">求解预算 / 秒</label><input id="threeDuration" type="number" value="60" min="5" max="3600"></div></div>
 <label for="threeInstructionMode">装配步骤</label><select id="threeInstructionMode"><option value="layer">按层基础步骤（快速演示）</option><option value="smart">Smart 结构规划</option></select>
 <p class="hint">按目标 stud 定尺，实体体素，table 支撑。预算不是整个进程的墙钟时限。</p>
-<div class="actions"><button id="threePrepare" type="button">处理并预览</button><button id="threeRun" type="button" class="primary">转换并生成 LEGO</button><button id="threeStop" type="button" class="danger" disabled>停止当前任务</button></div>
+<div class="actions"><button id="threePrepare" type="button">处理并预览</button><button id="threeQuickLayout" type="button">布局预览（≤24 studs）</button><button id="threeRun" type="button" class="primary">完整求解 LEGO</button><button id="threeStop" type="button" class="danger" disabled>停止当前任务</button></div>
 <div class="three-history"><label for="threeHistory">本路径的运行记录</label><select id="threeHistory"><option value="">暂无运行记录</option></select><button id="threeLoadHistory" class="three-small-action" type="button">载入所选结果</button></div>
 <p class="hint">原文件保留；每次转换创建独立目录。STL 下载不包含颜色。</p>
 </section>

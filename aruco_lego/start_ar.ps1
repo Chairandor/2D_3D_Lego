@@ -4,7 +4,7 @@ param(
     [ValidateSet('gemini', 'opencv')][string]$CameraSource = 'gemini',
     [string]$OrbbecSdk = '',
     [switch]$DisableGestures,
-    [double]$GestureAngle = 30,
+    [Alias('GestureAngle')][double]$GestureSpeed = 60,
     [double]$MarkerSize = 0.06,
     [double]$FitWidth = 0.09,
     [int]$MarkerId = 0,
@@ -37,7 +37,7 @@ $arArgs = @('-u', (Join-Path $arRoot 'aruco_lego_ar.py'), '--camera', "$Camera",
     '--log-dir', $runDir)
 if ($modelPath) { $arArgs += @('--model', $modelPath) }
 if ($OrbbecSdk) { $arArgs += @('--orbbec-sdk', $OrbbecSdk) }
-if (-not $DisableGestures) { $arArgs += @('--gestures', '--gesture-angle', "$GestureAngle") }
+if (-not $DisableGestures) { $arArgs += @('--gestures', '--gesture-speed', "$GestureSpeed") }
 if ($Model -eq 'jackjack' -and -not $StudioColors) {
     $shortcutPath = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Studio 2.0.lnk'
     if (Test-Path -LiteralPath $shortcutPath) {

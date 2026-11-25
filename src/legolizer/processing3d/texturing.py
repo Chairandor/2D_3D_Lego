@@ -9,6 +9,9 @@ import zipfile
 import numpy as np
 import open3d as o3d
 from PIL import Image
+from scipy.ndimage import map_coordinates
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 import trimesh
 
@@ -108,3 +111,93 @@ def export_texture_bundle(mesh: o3d.geometry.TriangleMesh, directory: Path,
                 obj="mesh_textured.obj", mtl="mesh_textured.mtl", texture="mesh_texture.png",
                 glb="mesh_textured.glb", archive="textured_obj.zip",
                 note="由点云 RGB 传递并烘焙；不包含输入中不存在的照片纹理细节")
+
+
+def split_vertex_fans(mesh: o3d.geometry.TriangleMesh) -> o3d.geometry.TriangleMesh:
+    """Split nonmanifold vertex fans without moving coordinates or removing faces."""
+    faces = np.asarray(mesh.triangles)
+    corners = np.arange(faces.size).reshape(faces.shape)
+    edges = np.concatenate([faces[:, [i, j]] for i, j in ((0, 1), (1, 2), (2, 0))])
+    endpoints = np.concatenate([corners[:, [i, j]] for i, j in ((0, 1), (1, 2), (2, 0))])
+    order = np.argsort(edges, axis=1)
+    edges = np.take_along_axis(edges, order, axis=1)
+    endpoints = np.take_along_axis(endpoints, order, axis=1)
+    _, groups, counts = np.unique(edges, axis=0, return_inverse=True, return_counts=True)
+    if (counts > 2).any():
+        raise ValueError("UV atlas requires an edge-manifold mesh")
+    pairs = endpoints[np.argsort(groups, kind="stable")][np.repeat(counts == 2, counts)].reshape(-1, 2, 2)
+    first, second = pairs[:, 0].ravel(), pairs[:, 1].ravel()
+    graph = coo_matrix((np.ones(len(first)), (first, second)), shape=(faces.size, faces.size))
+    _, mapping = connected_components(graph, directed=False)
+    _, representative = np.unique(mapping, return_index=True)
+    vertices = np.asarray(mesh.vertices)[faces.ravel()[representative]]
+    result = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(vertices),
+                                      o3d.utility.Vector3iVector(mapping.reshape(faces.shape)))
+    if not result.is_vertex_manifold() or not result.orient_triangles():
+        raise ValueError("Mesh remains unsuitable for UVAtlas after splitting vertex fans")
+    return result.compute_vertex_normals()
+
+
+def sample_texture(texture: np.ndarray, uvs: np.ndarray) -> np.ndarray:
+    """Read actual PNG sRGB with bilinear filtering and OBJ's lower-left UV origin."""
+    height, width = texture.shape[:2]
+    rows = (1. - uvs[:, 1]) * height - .5
+    cols = uvs[:, 0] * width - .5
+    return np.column_stack([map_coordinates(texture[:, :, k].astype(np.float32), [rows, cols],
+                                            order=1, mode="nearest") for k in range(3)]) / 255.
+
+
+def closest(scene: o3d.t.geometry.RaycastingScene, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Obtain face IDs and three barycentric weights for closest mesh points."""
+    result = scene.compute_closest_points(o3d.core.Tensor(points.astype(np.float32)), nthreads=4)
+    weights = result["primitive_uvs"].numpy()
+    return result["primitive_ids"].numpy(), np.column_stack((1. - weights.sum(axis=1), weights))
+
+
+def export_indexed_obj(mesh: o3d.geometry.TriangleMesh, uvs: np.ndarray,
+                       texture: np.ndarray, directory: Path) -> None:
+    """Save textured OBJ with independent UV indices, PNG, and a Y-up preview GLB."""
+    directory.mkdir()
+    image = Image.fromarray(texture)
+    image.save(directory / "mesh_texture.png")
+    (directory / "mesh_textured.mtl").write_text("newmtl point_rgb\nKd 1 1 1\nmap_Kd mesh_texture.png\n", encoding="utf-8")
+    faces, vertices, normals = map(np.asarray, (mesh.triangles, mesh.vertices, mesh.vertex_normals))
+    with (directory / "mesh_textured.obj").open("w", encoding="utf-8") as out:
+        out.write("# mm, Z-up\nmtllib mesh_textured.mtl\nusemtl point_rgb\n")
+        np.savetxt(out, vertices, fmt="v %.9g %.9g %.9g")
+        np.savetxt(out, normals, fmt="vn %.8g %.8g %.8g")
+        np.savetxt(out, uvs.reshape(-1, 2), fmt="vt %.9g %.9g")
+        for i, face in enumerate(faces + 1):
+            out.write("f " + " ".join(f"{v}/{3*i+j+1}/{v}" for j, v in enumerate(face)) + "\n")
+    preview = trimesh.Trimesh(vertices=vertices[faces].reshape(-1, 3),
+                              faces=np.arange(faces.size).reshape(-1, 3),
+                              vertex_normals=normals[faces].reshape(-1, 3), process=False)
+    preview.visual = trimesh.visual.texture.TextureVisuals(uv=uvs.reshape(-1, 2),
+        material=trimesh.visual.material.PBRMaterial(baseColorTexture=image, metallicFactor=0., roughnessFactor=.85))
+    preview.apply_transform(Z_TO_Y)
+    preview.export(directory / "mesh_textured.glb")
+    with zipfile.ZipFile(directory / "textured_obj.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+        for name in ("mesh_textured.obj", "mesh_textured.mtl", "mesh_texture.png"):
+            archive.write(directory / name, name)
+
+
+def bake_uv_atlas(mesh: o3d.geometry.TriangleMesh, directory: Path, resolution: int = 1024) -> dict:
+    """Build UVAtlas charts, bake transferred mesh RGB, and export the original PNG and UVs."""
+    tensor = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
+    tensor.compute_uvatlas(resolution, gutter=4, parallel_partitions=1, nthreads=4)
+    tensor.vertex["bake_rgb"] = tensor.vertex.colors
+    baked = tensor.bake_vertex_attr_textures(resolution, {"bake_rgb"}, margin=2,
+                                             fill=240. / 255., update_material=False)["bake_rgb"].numpy()
+    export_indexed_obj(mesh, tensor.triangle.texture_uvs.numpy(),
+                       np.rint(np.clip(baked, 0., 1.) * 255.).astype(np.uint8), directory)
+    return uv_atlas_info(mesh, directory)
+
+
+def uv_atlas_info(mesh: o3d.geometry.TriangleMesh, directory: Path) -> dict:
+    """Describe a saved UVAtlas bundle and its unadjusted source texture."""
+    with Image.open(directory / "mesh_texture.png") as atlas:
+        size = list(atlas.size)
+    return dict(method="uvatlas-point-rgb", triangles=len(mesh.triangles), atlas_size=size,
+                obj="mesh_textured.obj", mtl="mesh_textured.mtl", texture="mesh_texture.png",
+                glb="mesh_textured.glb", archive="textured_obj.zip",
+                note="PNG 保留点云 RGB。LEGO 从这张贴图取色，再按曝光和砖色表量化。")

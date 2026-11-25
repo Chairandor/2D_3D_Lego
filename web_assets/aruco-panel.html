@@ -26,9 +26,9 @@
     <div class="ar-gesture-settings">
       <label class="check"><input id="arGestures" type="checkbox" checked><span>启用食指指向控制</span></label>
       <label class="check"><input id="arSkeleton" type="checkbox" checked><span>显示人体与手部骨架</span></label>
-      <label for="arGestureAngle">每次转动角度 / 度</label><input id="arGestureAngle" type="number" min="5" max="90" step="5" value="30">
+      <label for="arGestureSpeed">旋转速度 / 度每秒</label><input id="arGestureSpeed" type="number" min="5" max="180" step="5" value="60">
       <p class="hint">伸出食指，收起其余三指，保持方向约 0.35 秒：<br>← 顺时针　→ 逆时针<br>↑ 向后翻滚　↓ 向前翻滚</p>
-      <p class="hint">同一方向保持不动只转一次；收回食指或改指另一方向可再次触发。顺逆时针从模型上方看，翻滚轴经过模型中心。</p>
+      <p class="hint">保持指向就持续旋转，收回食指或失去跟踪立即停止；换方向后重新确认。顺逆时针从模型上方看，翻滚轴经过模型中心。</p>
     </div>
     <div class="actions"><button id="arStart" type="button" class="primary" disabled>启动摄像头 AR</button><button id="arStop" type="button" class="danger" disabled>停止当前任务</button></div>
     <button id="arResetRotation" type="button" disabled>恢复模型朝向</button>

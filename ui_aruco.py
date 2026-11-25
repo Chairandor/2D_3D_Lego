@@ -28,10 +28,13 @@ def ldraw_upload_text(raw: bytes) -> str:
 
 def validate_camera_options(data: dict) -> dict:
     """校验界面的厘米参数，并转换为 AR 使用的米制参数。"""
+    data = dict(data)
+    if 'gesture_speed' not in data and 'gesture_angle' in data:
+        data['gesture_speed'] = data['gesture_angle']  # Legacy form/CLI alias now means degrees per second.
     result = {}
     for name, low, high, default in [('camera', 0, 20, 0), ('marker_id', 0, 49, 0),
                                      ('marker_size_cm', 0.1, 200, 6), ('fit_width_cm', 0.1, 200, 9),
-                                     ('gesture_angle', 5, 90, 30)]:
+                                     ('gesture_speed', 5, 180, 60)]:
         try:
             value = float(data.get(name, default))
         except (ValueError, TypeError) as exc:
@@ -202,7 +205,7 @@ class ArucoService:
             command = self._camera_command(options, live)
             command += ['--model', str(self.model), '--fit-width', str(options['fit_width_cm'] / 100)]
             if options['gestures']:
-                command += ['--gestures', '--gesture-angle', str(options['gesture_angle'])]
+                command += ['--gestures', '--gesture-speed', str(options['gesture_speed'])]
             if not options['show_skeleton']:
                 command += ['--no-skeleton']
             self._launch(command, 'running')

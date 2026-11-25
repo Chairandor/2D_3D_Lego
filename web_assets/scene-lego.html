@@ -1,0 +1,49 @@
+<style>
+#sceneWorkflow[hidden], #sceneExplorerFrame[hidden], #sceneTextureView[hidden] {display:none}
+.scene-workflow {display:grid;gap:16px}
+.scene-explorer-head {display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.scene-explorer-frame {display:block;width:100%;height:min(780px, 84vh);min-height:480px;border:1px solid var(--line);border-radius:12px;background:#f1efe7;margin-top:12px}
+.scene-conversion {display:grid;grid-template-columns:330px minmax(0,1fr);gap:16px}
+.scene-conversion > .panel {min-width:0}
+@media(max-width:850px) {.scene-conversion {grid-template-columns:1fr}}
+</style>
+<div id="sceneWorkflow" class="scene-workflow" hidden>
+  <section class="panel">
+    <div class="scene-explorer-head">
+      <div><h2>场景分割与目标提取</h2><p class="hint">选择场景，输入物体描述，预览候选并把目标送入彩色 LEGO 转换。</p></div>
+      <div class="actions">
+        <button id="sceneShowExplorer" type="button" class="primary">载入场景探索</button>
+        <a id="sceneOpenExplorer" target="_blank" rel="noopener noreferrer" hidden>在新窗口打开</a>
+      </div>
+    </div>
+    <p id="sceneExplorerNote" class="hint" aria-live="polite"></p>
+    <iframe id="sceneExplorerFrame" title="OpenMask3D 场景探索" class="scene-explorer-frame" hidden></iframe>
+  </section>
+  <div class="scene-conversion">
+    <section class="panel">
+      <h2>选中目标转 LEGO</h2>
+      <div class="fileline"><button id="sceneChoose" type="button">导入目标彩色 PLY</button></div>
+      <input id="sceneObjectFile" type="file" accept=".ply" hidden>
+      <p id="sceneObjectName" class="hint">请选择从场景探索导出的实例 PLY。</p>
+      <div class="three-fields">
+        <div><label for="sceneStuds">LEGO 宽度 / stud</label><input id="sceneStuds" type="number" min="4" max="64" step="1" value="64" required></div>
+        <div><label for="sceneUnit">1 源单位 = 毫米</label><input id="sceneUnit" type="number" min="0.000000001" step="any" value="1" required></div>
+        <div><label for="sceneUpAxis">源上轴</label><select id="sceneUpAxis"><option value="z">+Z</option><option value="y">+Y</option><option value="x">+X</option><option value="-z">−Z</option><option value="-y">−Y</option><option value="-x">−X</option></select></div>
+        <div><label for="sceneDuration">求解预算 / 秒</label><input id="sceneDuration" type="number" min="5" max="3600" step="1" value="60" required></div>
+      </div>
+      <label for="sceneExposure">LEGO 取色曝光（档）</label><input id="sceneExposure" type="number" min="-3" max="3" step="0.05" placeholder="默认 0">
+      <div class="actions"><button id="sceneQuickLayout" type="button" disabled>布局预览（≤24 studs）</button><button id="sceneConvert" type="button" class="primary" disabled>完整求解 LEGO</button><button id="sceneStop" type="button" class="danger" disabled>停止</button></div>
+      <p id="sceneStatus" class="hint" aria-live="polite"></p>
+      <p id="sceneBusy" class="hint" aria-live="polite"></p>
+    </section>
+    <section class="panel">
+      <h2>目标与转换结果</h2>
+      <div class="three-view-grid">
+        <div class="three-view-card"><div class="three-view-title">选中的实例点云</div><div class="three-viewport" id="sceneSourceView"></div></div>
+        <div class="three-view-card"><div class="three-view-title" id="sceneResultTitle">彩色 LEGO</div><div class="three-viewport" id="sceneResultView"></div><img id="sceneTextureView" class="three-atlas" alt="UV 贴图" hidden></div>
+      </div>
+      <div class="three-stage-assets" id="sceneAssets"></div>
+      <div class="three-downloads" id="sceneDownloads"></div>
+    </section>
+  </div>
+</div>

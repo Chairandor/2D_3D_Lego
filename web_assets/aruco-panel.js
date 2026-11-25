@@ -69,7 +69,7 @@ function render(data) {
   $('arStepModel').className = 'step ' + (state.preview_url ? 'active' : 'wait');
   $('arStepCamera').className = 'step ' + (camera.camera_opened ? 'active' : state.phase === 'running' ? 'wait' : '');
   $('arStepMarker').className = 'step ' + (camera.rendered_frames > 0 ? 'active' : camera.camera_opened ? 'wait' : '');
-  for (const id of ['arChoose', 'arLoadExample', 'arExamples', 'arCameraSource', 'arCamera', 'arMarkerId', 'arMarkerSize', 'arFitWidth', 'arGestures', 'arSkeleton', 'arGestureAngle']) $(id).disabled = state.running;
+  for (const id of ['arChoose', 'arLoadExample', 'arExamples', 'arCameraSource', 'arCamera', 'arMarkerId', 'arMarkerSize', 'arFitWidth', 'arGestures', 'arSkeleton', 'arGestureSpeed']) $(id).disabled = state.running;
   $('arStart').disabled = state.running || !state.preview_url;
   $('arStop').disabled = !state.running;
   $('arResetRotation').disabled = !state.running || state.phase !== 'running';
@@ -81,7 +81,7 @@ function render(data) {
   $('arGestureCount').textContent = `指向：${gesture.sequence || 0} 次`;
   const names = {left:'向左指', right:'向右指', up:'向上指', down:'向下指'};
   $('arPointingNow').textContent = state.running && gesture.current_direction ? `当前指向：${names[gesture.current_direction]} · 保持进度 ${Math.round((gesture.hold_progress || 0)*100)}%` : '当前指向：未识别（请伸食指、收起其余三指）';
-  $('arGestureLast').textContent = gesture.last_direction ? `${names[gesture.last_direction]} · ${gesture.last_action} ${gesture.step_degrees}°` : gesture.sequence ? '已恢复初始朝向' : '尚无指向动作';
+  $('arGestureLast').textContent = gesture.is_rotating ? `${names[gesture.active_direction]} · 持续${gesture.last_action} ${gesture.speed_degrees_per_second}°/秒` : gesture.last_direction ? `已停止 · 上次${names[gesture.last_direction]}` : gesture.sequence ? '已恢复初始朝向' : '尚无指向动作';
   $('arGestureHint').textContent = !state.running ? '启动摄像头后，伸出食指指向左 / 右 / 上 / 下' : !state.options.gestures ? '指向控制已关闭' : gesture.hint || '正在加载人体与手部跟踪……';
   link('arDownloadModel', state.model_url, state.model_name);
   link('arDownloadPreview', state.preview_url, 'preview.glb');
@@ -138,12 +138,12 @@ $('arModelFile').onchange = async event => {
 };
 $('arLoadExample').onclick = () => act('/api/ar/select', {path: $('arExamples').value});
 $('arStart').onclick = () => {
-  const fields = ['arCamera', 'arMarkerId', 'arMarkerSize', 'arFitWidth', 'arGestureAngle'];
+  const fields = ['arCamera', 'arMarkerId', 'arMarkerSize', 'arFitWidth', 'arGestureSpeed'];
   if (fields.some(id => !$(id).reportValidity())) return;
   act('/api/ar/start', {camera: $('arCamera').value, marker_id: $('arMarkerId').value,
     camera_source: $('arCameraSource').value,
     marker_size_cm: $('arMarkerSize').value, fit_width_cm: $('arFitWidth').value,
-    gestures: $('arGestures').checked, show_skeleton: $('arSkeleton').checked, gesture_angle: $('arGestureAngle').value});
+    gestures: $('arGestures').checked, show_skeleton: $('arSkeleton').checked, gesture_speed: $('arGestureSpeed').value});
 };
 $('arStop').onclick = () => act('/api/ar/stop', {});
 $('arResetRotation').onclick = () => act('/api/ar/reset-rotation', {});
@@ -165,7 +165,7 @@ try {
   }
   $('arGestures').checked = options.gestures !== false;
   $('arSkeleton').checked = options.show_skeleton !== false;
-  $('arGestureAngle').value = options.gesture_angle || 30;
+  $('arGestureSpeed').value = options.gesture_speed || options.gesture_angle || 60;
   $('arCameraSource').value = options.camera_source || 'gemini';
   render(initial);
   if (window.uiMode === 'ar' || state.running) refresh();

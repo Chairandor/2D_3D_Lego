@@ -17,15 +17,18 @@ import open3d as o3d
 
 from legolizer.constants import DEFAULT_PROJECT_DIR, STUD_PITCH_MM, BRICK_HEIGHT_MM
 from legolizer.integrations.backend import run_strict_backend
+from legolizer.integrations.legolization import run_layout_preview
 from legolizer.processing3d.conversion import reconstruct_poisson_local
 from legolizer.processing3d.mesh import cleanup_mesh, mesh_stats, normalize_mesh, read_mesh, write_mesh
 from legolizer.processing3d.orientation import orientation_matrix, score_mesh_orientations
-from legolizer.processing3d.colors import COMMON_LDRAW_COLORS
-from legolizer.processing3d.texturing import export_preview_glb, export_texture_bundle, transfer_point_colors
+from legolizer.processing3d.colors import COMMON_LDRAW_COLORS, TEXTURE_LDRAW_COLORS, TIKO_LDRAW_COLORS
+from legolizer.processing3d.texturing import bake_uv_atlas, export_preview_glb, split_vertex_fans, transfer_point_colors, uv_atlas_info
+from legolizer.processing3d.texture_voxels import (TIKO_COLOR_HASHES, UV_BUNDLE_FILES, archived_tiko_assets,
+                                                  archived_tiko_mesh, color_from_uv)
 from legolizer.processing3d.voxel import mesh_to_voxel
 
 
-from legolizer.processing3d.flow_config import FLOWS, POINT_CLOUD_MESH_PROFILE, validate_options
+from legolizer.processing3d.flow_config import FLOWS, POINT_CLOUD_MESH_PROFILE, TIKO_EXPOSURE_STOPS, validate_options
 
 
 BRICK_VOXEL_MM = (STUD_PITCH_MM, STUD_PITCH_MM, BRICK_HEIGHT_MM)
@@ -60,9 +63,13 @@ def _cloud_stats(cloud: o3d.geometry.PointCloud) -> dict:
 
 
 def run_pipeline(source: Path, output: Path, flow: str, options: dict,
-                 *, prepare_only: bool = False, project_dir: Path = DEFAULT_PROJECT_DIR) -> dict:
+                 *, prepare_only: bool = False, layout_only: bool = False, project_dir: Path = DEFAULT_PROJECT_DIR) -> dict:
     """处理原文件副本、输出各阶段预览、颜色资产、体素和后端审计。"""
     options = validate_options(flow, options)
+    if prepare_only and layout_only:
+        raise ValueError("请选择几何预览或 LEGO 布局预览")
+    requested_studs = options["target_width_studs"]
+    layout_studs = min(requested_studs, 24) if layout_only else requested_studs
     source, output = source.resolve(), output.resolve()
     if not source.is_file():
         raise ValueError(f"输入不存在：{source}")
@@ -88,6 +95,9 @@ def run_pipeline(source: Path, output: Path, flow: str, options: dict,
                  status="running", started=time.time(), ended=None, stages=stages, assets=[],
                  report={}, output=str(output), message="读取输入", random_seed=0,
                  versions=dict(python=platform.python_version(), open3d=o3d.__version__, numpy=np.__version__))
+    is_color = flow == "ply_color"
+    is_tiko = is_color and state["source_sha256"] in TIKO_COLOR_HASHES
+    preset = archived_tiko_assets(Path(__file__).resolve().parents[3], state["source_sha256"], options) if is_tiko else None
 
     def save():
         atomic_json(output / "pipeline3d.json", state)
@@ -146,6 +156,16 @@ def run_pipeline(source: Path, output: Path, flow: str, options: dict,
                   points_path, "points", "source", stats=stats,
                   note="此路径忽略原文件 RGB" if flow == "ply_plain" and stats["source_has_colors"] else "保留输入 RGB" if flow == "ply_color" else "无色点云")
         state["report"]["source"] = stats
+        if flow == "ply_color":
+            extraction = source.with_suffix(".json")
+            if extraction.is_file() and extraction.stat().st_size <= 16384:
+                try:
+                    origin = json.loads(extraction.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    origin = None
+                if (isinstance(origin, dict) and origin.get("method") == "openmask3d"
+                        and origin.get("path") == str(source) and origin.get("points") == stats["points"]):
+                    state["report"]["instance_extraction"] = origin
         transform_info = dict(source_to_processing=source_matrix.tolist(), source_up_axis=axis,
                               source_unit_mm=unit, unit="mm", up_axis="z", orientation=orientation,
                               color_policy=stats.get("color_policy", "single"))
@@ -161,11 +181,18 @@ def run_pipeline(source: Path, output: Path, flow: str, options: dict,
             cleanup_mesh(mesh)
             write_mesh(mesh_path, mesh)
         else:
-            o3d.utility.random.seed(0)
-            mesh, reconstruction = reconstruct_poisson_local(
-                raw, poisson_depth=options["poisson_depth"], density_quantile=options["density_quantile"])
+            if preset:
+                mesh, removed = archived_tiko_mesh(preset[0])
+                reconstruction = dict(method="saved-poisson", mesh_source=str(preset[0]), removed_faces=removed,
+                                      poisson_depth=options["poisson_depth"], density_quantile=options["density_quantile"])
+            else:
+                o3d.utility.random.seed(0)
+                mesh, reconstruction = reconstruct_poisson_local(
+                    raw, poisson_depth=options["poisson_depth"], density_quantile=options["density_quantile"])
+                if is_color:
+                    mesh = split_vertex_fans(cleanup_mesh(mesh))
             state["report"]["reconstruction"] = dict(reconstruction, profile=POINT_CLOUD_MESH_PROFILE)
-            if flow == "ply_color":
+            if is_color:
                 state["report"]["color_transfer"] = transfer_point_colors(mesh, raw)
             else:
                 mesh.vertex_colors = o3d.utility.Vector3dVector(np.empty((0, 3)))
@@ -178,10 +205,17 @@ def run_pipeline(source: Path, output: Path, flow: str, options: dict,
         asset("mesh_stl", "Mesh STL 下载（不含颜色）", mesh_dir / "mesh_mm.stl", "file", "mesh")
         state["report"]["mesh"] = mesh_info
         stage("mesh", "complete", stats=mesh_info)
-        if flow == "ply_color":
+        if is_color:
             stage("texture")
             texture_dir = output / "texture"
-            texture_info = export_texture_bundle(mesh, texture_dir)
+            if preset:
+                texture_dir.mkdir()
+                for name in UV_BUNDLE_FILES:
+                    shutil.copy2(preset[1] / name, texture_dir / name)
+                texture_info = uv_atlas_info(mesh, texture_dir)
+                texture_info["archived_from"] = str(preset[1])
+            else:
+                texture_info = bake_uv_atlas(mesh, texture_dir)
             state["report"]["texture"] = texture_info
             asset("texture", "UV 贴图 Mesh", texture_dir / texture_info["glb"], "mesh", "texture",
                   note=texture_info["note"], stats={"atlas": texture_info["atlas_size"]})
@@ -193,27 +227,54 @@ def run_pipeline(source: Path, output: Path, flow: str, options: dict,
             save()
             return state
         stage("voxel")
-        normalized, transform = normalize_mesh(mesh, options["target_width_studs"] * STUD_PITCH_MM)
+        normalized, transform = normalize_mesh(mesh, layout_studs * STUD_PITCH_MM)
         write_mesh(output / "normalized_mesh.ply", normalized)
+        if is_color:
+            normalized.vertex_colors = o3d.utility.Vector3dVector()
         volume = mesh_to_voxel(normalized, BRICK_VOXEL_MM, fill="orthographic", source=str(mesh_path))
+        colors = COMMON_LDRAW_COLORS
+        if is_color:
+            colors = TIKO_LDRAW_COLORS if is_tiko else TEXTURE_LDRAW_COLORS
+            exposure = options["palette_exposure_stops"]
+            if exposure is None:
+                exposure = TIKO_EXPOSURE_STOPS if is_tiko else 0.
+            volume = color_from_uv(volume, transform, texture_dir / texture_info["obj"], texture_dir / texture_info["texture"],
+                                   colors, exposure, keep_largest=bool(preset))
+            state["report"]["lego_color"] = dict(method="closest-face-barycentric-uv-bilinear-png", exposure_stops=exposure,
+                                                  palette="tiko" if is_tiko else "general", interior="unconstrained")
         volume.save(output / "source_occupancy.npz")
-        palette = {c.code: c.rgb for c in COMMON_LDRAW_COLORS}
-        occupied = np.argwhere(volume.occupancy)
-        codes = volume.colors[volume.occupancy] if volume.colors is not None else np.full(len(occupied), options["color"])
+        palette = {c.code: c.rgb for c in colors}
+        visible = volume.occupancy & (volume.colors >= 0) if is_color else volume.occupancy
+        occupied = np.argwhere(visible)
+        occupied_cells = int(volume.occupancy.sum())
+        codes = volume.colors[visible] if volume.colors is not None else np.full(len(occupied), options["color"])
         voxel_view = dict(centers=(np.asarray(volume.origin_mm) + (occupied + .5) * np.asarray(volume.voxel_size_mm)).tolist(),
                           size=list(volume.voxel_size_mm), colors=[palette.get(int(c), (160, 165, 169)) for c in codes])
         atomic_json(output / "voxel_preview.json", voxel_view)
         transform_info = dict(transform_info, source_to_normalized=(transform @ source_matrix).tolist(),
-                              target_width_studs=options["target_width_studs"], voxel_size_mm=list(BRICK_VOXEL_MM))
+                              target_width_studs=layout_studs, voxel_size_mm=list(BRICK_VOXEL_MM))
         state["coordinates"] = transform_info
         atomic_json(output / "transform.json", transform_info)
-        asset("voxel", "求解输入体素", output / "voxel_preview.json", "voxel", "voxel",
-              stats={"占用格": len(occupied), "颜色数": len(np.unique(codes))}, note="实体占用体素；不是砖块布局")
+        voxel_note = "预览从贴图取色的表面格，内部格由求解器自由配色" if is_color else "求解使用这些实体占用格"
+        asset("voxel", "贴图取色体素" if is_color else "求解输入体素", output / "voxel_preview.json", "voxel", "voxel",
+              stats={"占用格": occupied_cells, "预览格": len(occupied), "颜色数": len(np.unique(codes))}, note=voxel_note)
         asset("voxel_npz", "体素 NPZ 下载", output / "source_occupancy.npz", "file", "voxel")
-        state["report"]["voxel"] = dict(shape=list(volume.occupancy.shape), occupied_cells=len(occupied),
+        state["report"]["voxel"] = dict(shape=list(volume.occupancy.shape), occupied_cells=occupied_cells,
                                                color_count=len(np.unique(codes)), semantic=volume.semantic)
         stage("voxel", "complete", stats=state["report"]["voxel"])
         stage("lego")
+        if layout_only:
+            summary = run_layout_preview(volume, output / "solver", project_dir, options["duration_seconds"], options["color"])
+            summary.update(requested_width_studs=requested_studs, preview_width_studs=layout_studs)
+            state["report"]["legolization"] = summary
+            asset("lego", f"快速布局预览 · {layout_studs} studs", Path(summary["model_path"]), "lego", "lego",
+                  stats={"零件": summary["brick_count"], "连通块": summary["components"], "悬空件": summary["floating"]},
+                  note="已生成砖块布局。稳定性与装配审计尚未执行。")
+            stage("lego", "complete", stats=summary)
+            stage("assembly", "skipped")
+            state.update(status="preview", ended=time.time(), message=f"{layout_studs} studs 布局已生成，稳定性与装配尚未验证")
+            save()
+            return state
         summary = run_strict_backend(volume, output / "solver", quality=options["quality"], support_mode="table",
                                      hollow=False, project_dir=project_dir, duration_seconds=options["duration_seconds"],
                                      color=options["color"],
@@ -261,13 +322,15 @@ def main() -> int:
     parser.add_argument("--flow", choices=FLOWS, required=True)
     parser.add_argument("--options", default="{}")
     parser.add_argument("--project-dir", type=Path, default=DEFAULT_PROJECT_DIR)
-    parser.add_argument("--prepare-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--prepare-only", action="store_true")
+    mode.add_argument("--layout-only", action="store_true")
     args = parser.parse_args()
     try:
         result = run_pipeline(args.source, args.output, args.flow, json.loads(args.options),
-                              prepare_only=args.prepare_only, project_dir=args.project_dir)
+                              prepare_only=args.prepare_only, layout_only=args.layout_only, project_dir=args.project_dir)
         print(json.dumps(dict(status=result["status"], output=str(args.output)), ensure_ascii=False))
-        return 0 if result["status"] in {"complete", "prepared"} else int(result["report"].get("legolization", {}).get("exit_code", 3))
+        return 0 if result["status"] in {"complete", "prepared", "preview"} else int(result["report"].get("legolization", {}).get("exit_code", 3))
     except Exception:
         traceback.print_exc()
         return 1

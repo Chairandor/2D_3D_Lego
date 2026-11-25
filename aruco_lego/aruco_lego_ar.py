@@ -146,15 +146,16 @@ def main():
     parser.add_argument('--frame-output', type=Path, help='Atomically update a local JPEG for the web UI')
     parser.add_argument('--stop-file', type=Path, help='Stop and release the camera when this file exists')
     parser.add_argument('--gestures', action='store_true', help='Enable body skeleton, hands and index-finger pointing')
-    parser.add_argument('--gesture-angle', type=float, default=30, help='Degrees per confirmed finger direction (5 to 90)')
+    parser.add_argument('--gesture-speed', '--gesture-angle', dest='gesture_speed', type=float, default=60,
+                        help='Continuous pointing rotation speed in degrees/second (5 to 180)')
     parser.add_argument('--no-skeleton', action='store_true', help='Track gestures without drawing skeleton lines')
     parser.add_argument('--control-file', type=Path, help='Web UI rotation-reset commands')
     parser.add_argument('--board', action='store_true', help='Read on-board LDraw placements from the control file')
     args = parser.parse_args()
     if args.marker_size <= 0 or args.fit_width <= 0 or not 0 <= args.marker_id < 50:
         parser.error('marker-size 和 fit-width 必须为正数；marker-id 范围为 0–49。')
-    if not np.isfinite(args.gesture_angle) or not 5 <= args.gesture_angle <= 90:
-        parser.error('gesture-angle 必须在 5–90 度之间。')
+    if not np.isfinite(args.gesture_speed) or not 5 <= args.gesture_speed <= 180:
+        parser.error('gesture-speed 必须在 5–180 度/秒之间。')
     if args.board and args.control_file is None:
         parser.error('--board 需要 --control-file。')
     if args.log_dir:
@@ -193,7 +194,7 @@ def main():
     if mesh_list:
         bounds = np.stack([mesh.bounds for mesh in mesh_list])
         center = (bounds[:, 0].min(axis=0) + bounds[:, 1].max(axis=0)) / 2
-        rotation = ModelRotation(center, args.gesture_angle)
+        rotation = ModelRotation(center, args.gesture_speed)
         status['gesture'] = dict(enabled=args.gestures, show_skeleton=not args.no_skeleton, **rotation.status())
     cap = None
     frame = None
@@ -276,7 +277,7 @@ def main():
     try:
         if args.gestures and rotation:
             tracker = SkeletonGestureTracker()
-            print('POINTING READY: body 33 + hands 21; hold index direction 0.35s; left=CW, right=CCW, up=back, down=forward', flush=True)
+            print('CONTINUOUS POINTING READY: hold direction to rotate; release to stop; left=CW, right=CCW, up=back, down=forward', flush=True)
         renderer = pyrender.OffscreenRenderer(viewport_width=width, viewport_height=height)
         print(f'Point camera at marker ID {args.marker_id}. Press q or ESC to exit.', flush=True)
         while True:
@@ -296,7 +297,7 @@ def main():
                 board.update()
                 status['placed_models'] = len(board.nodes)
                 status['placement_errors'] = list(board.errors.values())
-            elif args.control_file and args.control_file.is_file():
+            elif rotation and args.control_file and args.control_file.is_file():
                 modified = args.control_file.stat().st_mtime_ns
                 if modified != control_mtime:
                     try:
@@ -309,16 +310,14 @@ def main():
                         control_mtime = modified
                     except (OSError, ValueError):
                         pass
-            if tracker:
-                direction = tracker.process(frame, now)
-                if direction:
-                    rotation.apply(direction, now)
+            if rotation:
+                direction = tracker.process(frame, now) if tracker else None
+                if rotation.drive(direction, now):
                     event = dict(direction=direction, elapsed_seconds=round(now - started, 3), **rotation.status())
                     print('GESTURE: ' + json.dumps(event, ensure_ascii=False), flush=True)
                     if args.log_dir:
                         with (args.log_dir / 'gestures.jsonl').open('a', encoding='utf-8') as stream:
                             stream.write(json.dumps(event, ensure_ascii=False) + '\n')
-            if rotation:
                 model_transform = rotation.advance(now)
                 status['gesture'].update(rotation.status())
             if tracker:

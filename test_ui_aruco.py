@@ -14,7 +14,7 @@ class ArucoInputTests(unittest.TestCase):
     def test_reject_non_finite_and_fractional_camera_options(self) -> None:
         for key, value in [('marker_size_cm', 'nan'), ('fit_width_cm', 'inf'),
                            ('marker_size_cm', 0), ('camera', 0.5), ('marker_id', 50),
-                           ('gesture_angle', float('nan')), ('gesture_angle', 100), ('gestures', 'false'),
+                           ('gesture_speed', float('nan')), ('gesture_speed', 181), ('gestures', 'false'),
                            ('camera_source', 'astra')]:
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 validate_camera_options({key: value})
@@ -23,7 +23,9 @@ class ArucoInputTests(unittest.TestCase):
         options = validate_camera_options({'gestures': False, 'show_skeleton': False, 'gesture_angle': 45})
         self.assertFalse(options['gestures'])
         self.assertFalse(options['show_skeleton'])
-        self.assertEqual(options['gesture_angle'], 45)
+        self.assertEqual(options['gesture_speed'], 45)
+        self.assertEqual(validate_camera_options({})['gesture_speed'], 60)
+        self.assertEqual(validate_camera_options({'gesture_speed':120})['gesture_speed'], 120)
         self.assertEqual(options['camera_source'], 'gemini')
         self.assertEqual(validate_camera_options({'camera_source':'opencv'})['camera_source'], 'opencv')
         with tempfile.TemporaryDirectory() as directory:

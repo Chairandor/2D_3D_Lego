@@ -1,5 +1,6 @@
 # Local configuration and credentials
 config.local.json
+openmask_scenes.local.json
 .env
 .env.*
 !.env.example

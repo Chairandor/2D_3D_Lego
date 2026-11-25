@@ -9,7 +9,11 @@ import threading
 import unittest
 from unittest.mock import patch
 
+import numpy as np
+
 import pipeline_ui
+import ui_scene_explorer
+from segmentation_lab.openmask3d_worker import mask_cosine_scores
 from ui_3d_jobs import ThreeDController, _write
 
 
@@ -55,6 +59,38 @@ class ThreeDJobsTests(unittest.TestCase):
         result = self.controller.load("stl", str(run))
         self.assertEqual(result["status"], "prepared")
 
+    def test_curated_example_selects_flow_without_running_solver(self):
+        run = self.controller.runs / "example_jackjack64"
+        run.mkdir(parents=True)
+        model = run / "lego.glb"
+        model.write_bytes(b"model")
+        _write(run / "pipeline3d.json", dict(flow="ply_color", status="partial", output=str(run),
+               source=str(self.root / "datasets/others/tiko_10000_points.ply"),
+               example=dict(id="jackjack64", label="JackJack · 64 studs"),
+               assets=[dict(id="lego", path=str(model), kind="mesh")]))
+        self.assertEqual(self.controller.bootstrap()["examples"][0]["id"], "jackjack64")
+        self.assertEqual(self.controller.load_example("jackjack64")["output"], str(run))
+        self.assertFalse(self.controller.is_running())
+        with self.assertRaises(ValueError):
+            self.controller.load_example("../jackjack64")
+
+    def test_mask_query_sort_uses_original_instance_columns(self):
+        folder = self.root / "ui_uploads/openmask3d/0123456789abcdef"
+        _write(folder / "dataset.json", dict(id="scene", label="Scene", masks="masks.npz"))
+        _write(self.root / "openmask_scenes.local.json", {
+            "scene": dict(label="Scene", scene=str(folder / "scene.ply"), masks=str(folder / "masks.npz")),
+        })
+        candidates = [dict(id=2, points=300), dict(id=0, points=200), dict(id=1, points=100)]
+        scores = mask_cosine_scores(np.array([[1, 0], [3, 4], [0, 0]]), np.array([3, 4]))
+        with patch.object(self.controller, "openmask_instances", return_value=dict(mask_count=3, instances=candidates)) as inspect:
+            with patch("ui_3d_jobs.ui_openmask.rank_instances", return_value=scores):
+                result = self.controller.query_openmask_scene(folder.name, "a baby doll", point=9)
+                self.assertEqual([entry["id"] for entry in result["instances"]], [1, 0])
+                self.assertEqual(inspect.call_args.kwargs["point"], 9)
+            with patch("ui_3d_jobs.ui_openmask.rank_instances", return_value=scores[:2]):
+                with self.assertRaisesRegex(ValueError, "行数与掩码列数"):
+                    self.controller.query_openmask_scene(folder.name, "a baby doll")
+
     def test_cancel_before_process_creation_is_persisted(self):
         with patch("ui_3d_jobs.threading.Thread"):
             result = self.controller.start(dict(flow="stl", prepare_only=True))
@@ -65,6 +101,68 @@ class ThreeDJobsTests(unittest.TestCase):
         self.assertFalse(self.controller.is_running())
         data = json.loads((Path(result["output"]) / "pipeline3d.json").read_text(encoding="utf-8"))
         self.assertEqual(data["status"], "cancelled")
+
+    def test_scene_job_keeps_file_pipeline_selection_separate(self):
+        regular = self.controller.runs / "regular"
+        _write(regular / "pipeline3d.json", dict(flow="ply_color", output=str(regular), status="prepared"))
+        self.controller.load("ply_color", str(regular))
+        source = self.root / "datasets/others/tiko_10000_points.ply"
+        with patch("ui_3d_jobs.threading.Thread"):
+            scene = self.controller.start(dict(flow="ply_color", workflow="scene", source=str(source)))
+            self.assertEqual(Path(scene["output"]).parent.name, "scene")
+            self.assertTrue(self.controller.status("ply_color", output=scene["output"])["running"])
+            status = self.controller.status("ply_color")
+            self.assertEqual(status["output"], str(regular))
+            self.assertFalse(status["running"])
+            self.assertTrue(status["busy"])
+            self.assertEqual(status["active_job"], dict(output=scene["output"], flow="ply_color", workflow="scene"))
+            bundle = Path(scene["output"]) / "solver/legolization"
+            _write(bundle / "bundle.json", {"stages": {"model": {"status": "complete"}}})
+            model = bundle / "model/model.mpd"
+            model.parent.mkdir()
+            model.write_text("0 test", encoding="utf-8")
+            status = self.controller.status("ply_color", output=scene["output"])
+            self.assertEqual(status["assets"][0]["path"], str(model))
+            self.assertTrue(status["running"])
+            self.assertIn("正在处理装配说明", status["message"])
+            self.controller.stop(scene["output"])
+        self.controller._run()
+        self.assertEqual(self.controller.status("ply_color", output=scene["output"])["status"], "cancelled")
+
+    def test_instance_import_remains_available_during_another_conversion(self):
+        with patch("ui_3d_jobs.threading.Thread"):
+            active = self.controller.start(dict(flow="stl"))
+        with patch.object(self.controller, "_call_openmask", return_value={"scene_points": 12}):
+            target = self.controller.upload_openmask("instance.ply", b"ply\n", "instance")
+        self.assertEqual(Path(target["path"]).read_bytes(), b"ply\n")
+        self.assertEqual(self.controller.status("ply_color")["active_job"]["output"], active["output"])
+        with self.assertRaisesRegex(RuntimeError, "已有 3D 任务运行中"):
+            self.controller.start(dict(flow="ply_color", workflow="scene", source=target["path"]))
+        self.controller.stop(active["output"])
+        self.controller._run()
+        self.assertIsNone(self.controller.status("ply_color")["active_job"])
+        with patch("ui_3d_jobs.threading.Thread"):
+            self.controller.start(dict(flow="ply_color", workflow="scene", source=target["path"]))
+
+    def test_failed_record_write_releases_job_slot(self):
+        with patch("ui_3d_jobs.threading.Thread"):
+            run = self.controller.start(dict(flow="stl"))
+        self.controller.stop(run["output"])
+        with patch("ui_3d_jobs._write", side_effect=PermissionError("fixture")):
+            self.controller._run()
+        status = self.controller.status("stl")
+        self.assertFalse(status["busy"])
+        self.assertEqual(status["status"], "failed")
+        self.assertIn("保存 3D 任务记录失败", status["message"])
+
+    def test_scene_explorer_retains_only_verified_instance_route(self):
+        with patch.dict("os.environ", {"OPENMASK3D_VIEWER_URL": "http://127.0.0.1:18765/"}):
+            url = ui_scene_explorer.upstream_url("/api/instances/45/download.ply", "scene=jackjack_dense")
+            self.assertEqual(url, "http://127.0.0.1:18765/api/instances/45/download.ply?scene=jackjack_dense")
+            for path, query in (("/../../etc/passwd", ""), ("/api/scene", "scene=../test"),
+                                ("/api/scene", "scene=jackjack_dense&scene=redwood")):
+                with self.assertRaises(ValueError):
+                    ui_scene_explorer.upstream_url(path, query)
 
     def test_http_embeds_same_theme_and_routes_upload(self):
         server = pipeline_ui.ThreadingHTTPServer(("127.0.0.1", 0), pipeline_ui.Handler)
@@ -80,6 +178,8 @@ class ThreeDJobsTests(unittest.TestCase):
             self.assertIn('id="threeWorkflow"', page)
             self.assertIn('--yellow:#f2c94c', page)
             self.assertIn('id="imageWorkflow"', page)
+            self.assertLess(page.index('id="modeSceneButton"'), page.index('id="modeArButton"'))
+            self.assertIn('id="sceneWorkflow"', page)
             client.request("GET", "/api/3d/bootstrap")
             response = client.getresponse()
             self.assertEqual(len(json.loads(response.read())["flows"]), 3)

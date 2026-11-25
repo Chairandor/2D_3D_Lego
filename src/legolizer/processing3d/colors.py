@@ -51,6 +51,21 @@ COMMON_LDRAW_COLORS: tuple[LDrawColor, ...] = (
     LDrawColor(330, "Olive Green", (155, 154, 90)),
 )
 
+TIKO_LDRAW_COLORS = (
+    LDrawColor(0, "Black", (27, 42, 52)),
+    LDrawColor(6, "Brown", (84, 51, 36)),
+    LDrawColor(19, "Tan", (215, 186, 140)),
+    LDrawColor(22, "Purple", (103, 31, 129)),
+    LDrawColor(28, "Dark Tan", (137, 125, 98)),
+    LDrawColor(30, "Medium Lavender", (160, 110, 185)),
+    LDrawColor(71, "Light Bluish Gray", (150, 150, 150)),
+    LDrawColor(72, "Dark Bluish Gray", (100, 100, 100)),
+    LDrawColor(308, "Dark Brown", (53, 33, 0)),
+    LDrawColor(373, "Sand Purple", (117, 101, 125)),
+)
+_COMMON_CODES = {color.code for color in COMMON_LDRAW_COLORS}
+TEXTURE_LDRAW_COLORS = COMMON_LDRAW_COLORS + tuple(color for color in TIKO_LDRAW_COLORS if color.code not in _COMMON_CODES)
+
 _CODES = np.asarray([item.code for item in COMMON_LDRAW_COLORS], dtype=np.int16)
 _RGBS = np.asarray([item.rgb for item in COMMON_LDRAW_COLORS], dtype=np.float64)
 _SRGB_TO_LMS = np.asarray(
@@ -69,20 +84,26 @@ _LMS_TO_OKLAB = np.asarray(
 )
 
 
+def srgb_to_linear(values: np.ndarray) -> np.ndarray:
+    """Decode normalized sRGB channels into linear light."""
+    return np.where(values <= .04045, values / 12.92, ((values + .055) / 1.055) ** 2.4)
+
+
+def linear_to_srgb(values: np.ndarray) -> np.ndarray:
+    """Encode linear light channels for display in sRGB."""
+    return np.where(values <= .0031308, 12.92 * values, 1.055 * np.maximum(values, 0.) ** (1 / 2.4) - .055)
+
+
 def _srgb_to_oklab(values: np.ndarray) -> np.ndarray:
     scaled = np.asarray(values, dtype=np.float64).reshape(-1, 3) / 255.0
-    linear = np.where(
-        scaled <= 0.04045,
-        scaled / 12.92,
-        ((scaled + 0.055) / 1.055) ** 2.4,
-    )
+    linear = srgb_to_linear(scaled)
     return np.cbrt(linear @ _SRGB_TO_LMS.T) @ _LMS_TO_OKLAB.T
 
 
 _PALETTE_OKLAB = _srgb_to_oklab(_RGBS)
 
 
-def quantize_rgb_to_ldraw(rgb: np.ndarray) -> np.ndarray:
+def quantize_rgb_to_ldraw(rgb: np.ndarray, *, palette: tuple[LDrawColor, ...] = COMMON_LDRAW_COLORS) -> np.ndarray:
     """把任意 ``(..., 3)`` 的 0..1 或 0..255 RGB 映射为 LDraw 色号。"""
     values = np.asarray(rgb, dtype=np.float64)
     if values.shape[-1] != 3:
@@ -91,12 +112,14 @@ def quantize_rgb_to_ldraw(rgb: np.ndarray) -> np.ndarray:
     if flat.size and float(np.nanmax(flat)) <= 1.0:
         flat = flat * 255.0
     pixels = _srgb_to_oklab(np.clip(flat, 0.0, 255.0))
-    delta = pixels[:, None, :] - _PALETTE_OKLAB[None, :, :]
+    codes = _CODES if palette is COMMON_LDRAW_COLORS else np.asarray([color.code for color in palette], dtype=np.int16)
+    palette_lab = _PALETTE_OKLAB if palette is COMMON_LDRAW_COLORS else _srgb_to_oklab([color.rgb for color in palette])
+    delta = pixels[:, None, :] - palette_lab[None, :, :]
     # 提高色度权重，避免近黑/近灰错误吸附到深棕等饱和色。
     distance = delta[:, :, 0] ** 2 + 3.0 * (
         delta[:, :, 1] ** 2 + delta[:, :, 2] ** 2
     )
-    return _CODES[np.argmin(distance, axis=1)].reshape(values.shape[:-1])
+    return codes[np.argmin(distance, axis=1)].reshape(values.shape[:-1])
 
 
 def color_name(code: int) -> str:

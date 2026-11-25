@@ -8,9 +8,12 @@ from typing import Any
 import numpy as np
 
 
+UNCONSTRAINED_COLOR = -2
+
+
 @dataclass(frozen=True)
 class VoxelVolume:
-    """三维占用网格；origin_mm 是索引 (0, 0, 0) 单元的最小角。"""
+    """三维占用网格。已占用单元的 -2 色号表示任意砖色均可覆盖。"""
 
     occupancy: np.ndarray
     voxel_size_mm: tuple[float, float, float]

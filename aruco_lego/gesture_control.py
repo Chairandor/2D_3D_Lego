@@ -14,24 +14,18 @@ ACTIONS = {'left': '顺时针旋转', 'right': '逆时针旋转', 'up': '向后�
 
 
 class PointingRecognizer:
-    """方向保持 0.35 秒触发一次；收指 0.25 秒或改变方向后可再次触发。"""
+    """方向保持 0.35 秒后持续输出；方向消失或冲突立即输出停止。"""
 
-    def __init__(self, hold_seconds: float = 0.35, release_seconds: float = 0.25,
-                 cooldown: float = 0.6) -> None:
+    def __init__(self, hold_seconds: float = 0.35) -> None:
         self.hold_seconds = hold_seconds
-        self.release_seconds = release_seconds
-        self.cooldown = cooldown
         self.reset()
 
     def reset(self) -> None:
-        """重置待确认方向和锁定状态。"""
+        """清除已确认的方向和保持进度。"""
         self.pending = ''
         self.pending_since = 0.0
         self.samples = 0
-        self.latched = ''
-        self.neutral_since = None
         self.last_seen = None
-        self.next_allowed = 0.0
         self.progress = 0.0
         self.state = 'idle'
 
@@ -40,32 +34,21 @@ class PointingRecognizer:
         directions = {direction for direction in observations.values() if direction in ACTIONS}
         if len(directions) > 1:
             self.pending, self.samples, self.progress, self.state = '', 0, 0, 'ambiguous'
-            self.neutral_since = None
             return None
         if not directions:
-            if self.neutral_since is None:
-                self.neutral_since = timestamp
-            if timestamp - self.neutral_since >= self.release_seconds:
-                self.latched = ''
-            if self.last_seen is None or timestamp - self.last_seen > 0.15:
-                self.pending, self.samples, self.progress = '', 0, 0
+            self.pending, self.samples, self.progress = '', 0, 0
             self.state = 'idle'
             return None
         direction = next(iter(directions))
-        self.neutral_since = None
         if direction != self.pending or self.last_seen is None or timestamp - self.last_seen > 1.5:
             self.pending, self.pending_since, self.samples = direction, timestamp, 0
         self.last_seen = timestamp
         self.samples += 1
-        if direction == self.latched:
-            self.progress, self.state = 1.0, 'latched'
-            return None
         self.progress = min((timestamp - self.pending_since) / self.hold_seconds, 1.0)
-        self.state = 'holding' if timestamp >= self.next_allowed else 'cooldown'
-        if self.progress < 1 or self.samples < 3 or timestamp < self.next_allowed:
+        self.state = 'holding'
+        if self.progress < 1 or self.samples < 3:
             return None
-        self.latched, self.state = direction, 'latched'
-        self.next_allowed = timestamp + self.cooldown
+        self.state = 'active'
         return direction
 
     def feedback(self) -> dict:
@@ -78,43 +61,40 @@ class PointingRecognizer:
 class ModelRotation:
     """绕包围盒中心旋转；左/右按从 +Z 俯视，后方为标记 +Y。"""
 
-    def __init__(self, center: np.ndarray, step_degrees: float = 30) -> None:
+    def __init__(self, center: np.ndarray, speed_degrees: float = 60) -> None:
         self.center = np.asarray(center, dtype=float)
         if self.center.shape != (3,) or not np.isfinite(self.center).all():
             raise ValueError('模型中心必须为有限的三维坐标。')
-        if not math.isfinite(step_degrees) or not 5 <= step_degrees <= 90:
-            raise ValueError('每次转动角度必须在 5–90 度之间。')
-        self.step_degrees = step_degrees
+        if not math.isfinite(speed_degrees) or not 5 <= speed_degrees <= 180:
+            raise ValueError('旋转速度必须在 5–180 度/秒之间。')
+        self.speed_degrees = speed_degrees
         self.rotation = np.eye(3)
-        self.target = np.eye(3)
-        self.animation_start = np.eye(3)
-        self.turn_started = 0.0
-        self.last_time = 0.0
+        self.last_time = None
+        self.active_direction = ''
         self.sequence = 0
         self.last_direction = ''
 
-    def apply(self, direction: str, timestamp: float) -> None:
-        """将一次食指指向变为持续 0.22 秒的中心旋转。"""
-        if direction not in ACTIONS:
+    def drive(self, direction: str | None, timestamp: float) -> bool:
+        """更新持续控制方向；空方向停止，返回是否开始了新的旋转方向。"""
+        if direction is not None and direction not in ACTIONS:
             raise ValueError('未知指向。')
         self.advance(timestamp)
-        angle = math.radians(self.step_degrees) * (-1 if direction in ('left', 'up') else 1)
-        c, s = math.cos(angle), math.sin(angle)
-        delta = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]]) if direction in ('left', 'right') else np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
-        self.animation_start = self.rotation.copy()
-        self.target = delta @ self.rotation
-        self.turn_started = timestamp
-        self.sequence += 1
-        self.last_direction = direction
+        changed = bool(direction) and direction != self.active_direction
+        self.active_direction = direction or ''
+        if changed:
+            self.sequence += 1
+            self.last_direction = direction
+        return changed
 
     def advance(self, timestamp: float) -> np.ndarray:
-        """插值显示朝向；中心点在整个动画期间保持不变。"""
-        import cv2
-        fraction = min(max((timestamp - self.turn_started) / 0.22, 0), 1)
-        # Rodrigues interpolation keeps the transform a proper rigid rotation.
-        vector, _ = cv2.Rodrigues(self.target @ self.animation_start.T)
-        increment, _ = cv2.Rodrigues(vector * (fraction * fraction * (3 - 2 * fraction)))
-        self.rotation = increment @ self.animation_start
+        """按实际经过时间积累角度，停转时保持朝向和模型中心不变。"""
+        elapsed = min(max(timestamp - self.last_time, 0), 0.5) if self.last_time is not None else 0
+        direction = self.active_direction
+        if direction and elapsed:
+            angle = math.radians(self.speed_degrees) * elapsed * (-1 if direction in ('left', 'up') else 1)
+            c, s = math.cos(angle), math.sin(angle)
+            delta = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]]) if direction in ('left', 'right') else np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+            self.rotation = delta @ self.rotation
         self.last_time = timestamp
         result = np.eye(4)
         result[:3, :3] = self.rotation
@@ -124,14 +104,16 @@ class ModelRotation:
     def reset(self) -> None:
         """恢复显示朝向，不修改几何或源文件。"""
         self.rotation = np.eye(3)
-        self.target = np.eye(3)
-        self.animation_start = np.eye(3)
+        self.active_direction = ''
+        self.last_time = None
         self.last_direction = ''
 
     def status(self) -> dict:
         """输出网页可追踪的动作序号和 AR 坐标系旋转矩阵。"""
         return dict(sequence=self.sequence, last_direction=self.last_direction,
-                    last_action=ACTIONS.get(self.last_direction, ''), step_degrees=self.step_degrees,
+                    last_action=ACTIONS.get(self.last_direction, ''),
+                    control_mode='continuous', active_direction=self.active_direction,
+                    is_rotating=bool(self.active_direction), speed_degrees_per_second=self.speed_degrees,
                     rotation_ar=self.rotation.round(8).tolist(), center_m=self.center.tolist())
 
 
@@ -203,7 +185,7 @@ class SkeletonGestureTracker:
         self.info.update(self.recognizer.feedback())
         state = self.recognizer.state
         self.info['hint'] = ('两只手方向不同，请只用一只手指向' if state == 'ambiguous' else
-                             '已执行；收回食指后再指，或改指另一个方向' if state == 'latched' else
+                             '正在持续旋转；收回食指即可停止' if state == 'active' else
                              '保持食指方向约 0.35 秒' if observations else
                              '伸出食指、收起其余三指，指向左 / 右 / 上 / 下')
         return event

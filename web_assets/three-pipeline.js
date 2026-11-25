@@ -6,19 +6,49 @@ import {LDrawLoader} from 'three/addons/loaders/LDrawLoader.js';
 import {LDrawConditionalLineMaterial} from 'three/addons/materials/LDrawConditionalLineMaterial.js';
 
 const $=id=>document.getElementById(id), gltf=new GLTFLoader(), ply=new PLYLoader();
-const states={idle:'就绪',starting:'正在启动',running:'处理中',prepared:'几何已准备',complete:'执行完成',partial:'部分结果',failed:'失败',cancelled:'已停止',interrupted:'已中断',pending:'等待'};
+const states={idle:'就绪',starting:'正在启动',running:'处理中',prepared:'几何已准备',preview:'布局预览',skipped:'未执行',complete:'执行完成',partial:'部分结果',failed:'失败',cancelled:'已停止',interrupted:'已中断',pending:'等待'};
 let bootstrap, state={}, flow=localStorage.getItem('threeFlow')||'stl', source='demo', selected='', signature='', sourceSignature='', timer=null, poll=null;
 let legoQueue=Promise.resolve(), playback=null;
+let refreshId = 0, loadingExample = false;
 
-async function request(path,body){const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败');return data;}
+export async function request(path,body){const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败');return data;}
+export async function uploadFile(path, file, fields) {
+    if (file.size > 128 * 1024 ** 2) throw new Error('文件超过 128 MiB');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+    return request(path, {...fields, name: file.name, data: btoa(binary)});
+}
 function message(text,error=false){const box=$('threeNotice');box.replaceChildren();if(text){const n=document.createElement('div');n.className='notice '+(error?'error':'warning');n.textContent=text;box.append(n);}}
 function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function baseName(value){return String(value||'').replaceAll('\\','/').split('/').pop();}
-function setMode(mode){mode=['image','3d','ar'].includes(mode)?mode:'image';window.uiMode=mode;localStorage.setItem('pipelineMode',mode);$('imageWorkflow').hidden=mode!=='image';$('threeWorkflow').hidden=mode!=='3d';if($('arucoWorkflow'))$('arucoWorkflow').hidden=mode!=='ar';$('mode3dButton').classList.toggle('active',mode==='3d');$('mode2dButton').classList.toggle('active',mode==='image');$('modeArButton')?.classList.toggle('active',mode==='ar');document.querySelector('.assistant-launch').hidden=mode!=='image';if(mode!=='image'){document.querySelector('.assistant-panel').hidden=true;document.body.classList.remove('assistant-open');}if(mode==='3d'){sourceView?.resize();resultView?.resize();refresh();}else if(mode==='image')window.refresh?.();window.dispatchEvent(new CustomEvent('pipeline-mode-change',{detail:{mode}}));}
+function setMode(mode) {
+    const modes = {image: ['imageWorkflow', 'mode2dButton'], '3d': ['threeWorkflow', 'mode3dButton'],
+        scene: ['sceneWorkflow', 'modeSceneButton'], ar: ['arucoWorkflow', 'modeArButton']};
+    if (!Object.hasOwn(modes, mode)) mode = 'image';
+    window.uiMode = mode;
+    localStorage.setItem('pipelineMode', mode);
+    for (const [key, [panel, button]] of Object.entries(modes)) {
+        $(panel).hidden = key !== mode;
+        $(button).classList.toggle('active', key === mode);
+    }
+    document.querySelector('.assistant-launch').hidden = mode !== 'image';
+    if (mode !== 'image') {
+        document.querySelector('.assistant-panel').hidden = true;
+        document.body.classList.remove('assistant-open');
+    }
+    if (mode === '3d') {
+        sourceView?.resize();
+        resultView?.resize();
+        refresh();
+    } else if (mode === 'image') window.refresh?.();
+    window.dispatchEvent(new CustomEvent('pipeline-mode-change', {detail: {mode}}));
+}
 window.setPipelineMode=setMode;
+$('modeSceneButton').addEventListener('click',()=>setMode('scene'));
 $('mode3dButton').addEventListener('click',()=>setMode('3d'));$('mode2dButton').addEventListener('click',()=>setMode('image'));
 
-class Viewport{
+export class Viewport{
  constructor(element){this.el=element;this.serial=0;this.model=null;this.maxSteps=1;this.renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});this.renderer.setPixelRatio(Math.min(devicePixelRatio,2));this.renderer.setClearColor(0xf1efe7,1);this.renderer.outputColorSpace=THREE.SRGBColorSpace;element.append(this.renderer.domElement);this.scene=new THREE.Scene();this.camera=new THREE.PerspectiveCamera(38,1,.01,100000);this.camera.position.set(3,2,3);this.controls=new OrbitControls(this.camera,this.renderer.domElement);this.controls.enableDamping=true;this.dirty=true;this.controls.addEventListener('change',()=>{this.dirty=true;});this.scene.add(new THREE.HemisphereLight(0xffffff,0xa3a99a,2));const key=new THREE.DirectionalLight(0xffffff,2);key.position.set(4,8,5);this.scene.add(key);this.ro=new ResizeObserver(()=>this.resize());this.ro.observe(element);this.animate=()=>{this.frame=requestAnimationFrame(this.animate);if(!this.el.getBoundingClientRect().width)return;this.controls.update();if(this.dirty){this.dirty=false;try{this.renderer.render(this.scene,this.camera);}catch(error){this.text('显示失败：'+error.message.slice(0,160));}}};this.animate();}
  resize(){const w=this.el.clientWidth,h=this.el.clientHeight;if(!w||!h)return;this.renderer.setSize(w,h,false);this.camera.aspect=w/h;this.camera.updateProjectionMatrix();this.dirty=true;}
  text(text){let n=this.el.querySelector('.three-placeholder');if(!n){n=node('div',text,'three-placeholder');this.el.append(n);}n.textContent=text;n.hidden=!text;}
@@ -29,21 +59,106 @@ class Viewport{
 let sourceView,resultView;
 try{sourceView=new Viewport($('threeSourceView'));resultView=new Viewport($('threeResultView'));window.__threeViews={source:sourceView,result:resultView};}catch(error){message('浏览器需要启用 WebGL：'+error.message,true);}
 
-function options(){return {source_unit_mm:Number($('threeUnit').value),source_up_axis:$('threeAxis').value,target_width_studs:Number($('threeStuds').value),poisson_depth:Number($('threeDepth').value),density_quantile:Number($('threeDensity').value),quality:$('threeQuality').value,duration_seconds:Number($('threeDuration').value),color:Number($('threeColor').value),instruction_mode:$('threeInstructionMode').value};}
-function applyOptions(values){for(const [key,id] of Object.entries({source_unit_mm:'threeUnit',source_up_axis:'threeAxis',target_width_studs:'threeStuds',poisson_depth:'threeDepth',density_quantile:'threeDensity',quality:'threeQuality',duration_seconds:'threeDuration',color:'threeColor',instruction_mode:'threeInstructionMode'}))if(values[key]!==undefined)$(id).value=values[key];}
-function configFlow(){const meta=bootstrap.flows.find(f=>f.id===flow);$('threeFlow').value=flow;$('threeTitle').textContent=meta.label;$('threeFile').accept=flow==='stl'?'.stl':'.ply';$('threeReconstruction').hidden=flow==='stl';$('threeAxis').querySelector('[value="auto"]').disabled=flow!=='stl';$('threeSourceName').textContent='默认示例：'+meta.demo;$('threeFlowNote').textContent=flow==='stl'?'直接读取 STL 网格，经定尺与体素化交给 legolization。':flow==='ply_plain'?'用局部法向 Poisson 重建 Mesh，忽略输入 RGB。':'用局部法向 Poisson 重建 Mesh，保留点云 RGB 并烘焙 UV 贴图。';applyOptions({source_unit_mm:meta.unit,source_up_axis:meta.axis,target_width_studs:12,poisson_depth:7,density_quantile:.005,quality:'direct',duration_seconds:60,color:4,instruction_mode:'layer'});}
-function renderChecks(){const report=state.report?.legolization,box=$('threeChecks');box.replaceChildren();if(!report)return;for(const [title,text,cls] of [['布局可拼',report.buildable?'是':'未通过 / 未完成',report.buildable?'pass':'fail'],['table 条件下稳定',report.stable?'是':'未通过 / 未完成',report.stable?'pass':'fail'],['说明书状态',report.instructions_status||'未生成',report.instructions_status==='complete'?'pass':'warn'],['装配审计',report.instruction_audit_valid===true?'通过':report.instruction_audit_valid===false?'未通过':'未完成',report.instruction_audit_valid===true?'pass':report.instruction_audit_valid===false?'fail':'warn']]){const n=node('div',title,'three-check '+cls);n.append(node('b',text));box.append(n);}if(report.bundle_status==='partial')box.append(node('p','partial 是部分结果；步骤可预览不代表说明书已完全认证。','hint'));}
+function options(){return {source_unit_mm:Number($('threeUnit').value),source_up_axis:$('threeAxis').value,target_width_studs:Number($('threeStuds').value),poisson_depth:Number($('threeDepth').value),density_quantile:Number($('threeDensity').value),palette_exposure_stops:$('threeExposure').value===''?null:Number($('threeExposure').value),quality:$('threeQuality').value,duration_seconds:Number($('threeDuration').value),color:Number($('threeColor').value),instruction_mode:$('threeInstructionMode').value};}
+function applyOptions(values){for(const [key,id] of Object.entries({source_unit_mm:'threeUnit',source_up_axis:'threeAxis',target_width_studs:'threeStuds',poisson_depth:'threeDepth',density_quantile:'threeDensity',palette_exposure_stops:'threeExposure',quality:'threeQuality',duration_seconds:'threeDuration',color:'threeColor',instruction_mode:'threeInstructionMode'}))if(values[key]!==undefined)$(id).value=values[key]??'';}
+function configFlow(){const meta=bootstrap.flows.find(f=>f.id===flow);$('threeFlow').value=flow;$('threeTitle').textContent=meta.label;$('threeFile').accept=flow==='stl'?'.stl':'.ply';$('threeReconstruction').hidden=flow==='stl';$('threeTextureExposure').hidden=flow!=='ply_color';$('threeAxis').querySelector('[value="auto"]').disabled=flow!=='stl';$('threeSourceName').textContent='默认输入：'+meta.demo;$('threeFlowNote').textContent=flow==='stl'?'直接读取 STL 网格，经定尺与体素化交给 legolization。':flow==='ply_plain'?'用局部法向 Poisson 重建 Mesh，忽略输入 RGB。':'用局部法向 Poisson 重建 Mesh，经 UVAtlas 烘焙后直接从 PNG 给 LEGO 表面体素取色。';applyOptions({source_unit_mm:meta.unit,source_up_axis:meta.axis,target_width_studs:12,poisson_depth:7,density_quantile:.005,palette_exposure_stops:null,quality:'direct',duration_seconds:60,color:4,instruction_mode:'layer'});}
+function configureExamples() {
+    const examples = bootstrap.examples || [];
+    const list = $('threeExamples');
+    list.replaceChildren();
+    for (const example of examples) {
+        const option = node('option', example.label);
+        option.value = example.id;
+        list.append(option);
+    }
+    $('threeExamplesRow').hidden = !examples.length;
+    $('threeDemo').textContent = examples.length ? '载入示例' : '载入默认示例';
+    const match = examples.find(example => example.flow === flow);
+    if (match) list.value = match.id;
+
+}
+function showSelectedSource(selection = state) {
+    if (!selection.source) return;
+    source = selection.source;
+    $('threeSourceName').textContent = selection.example?.description || '当前结果输入：' + baseName(source);
+    if (selection.example) {
+        $('threeTitle').textContent = selection.example.label;
+        $('threeExamples').value = selection.example.id;
+    }
+}
+function renderChecks(){const report=state.report?.legolization,box=$('threeChecks');box.replaceChildren();if(!report||report.mode==='layout-preview')return;for(const [title,text,cls] of [['布局可拼',report.buildable?'是':'未通过 / 未完成',report.buildable?'pass':'fail'],['table 条件下稳定',report.stable?'是':'未通过 / 未完成',report.stable?'pass':'fail'],['说明书状态',report.instructions_status||'未生成',report.instructions_status==='complete'?'pass':'warn'],['装配审计',report.instruction_audit_valid===true?'通过':report.instruction_audit_valid===false?'未通过':'未完成',report.instruction_audit_valid===true?'pass':report.instruction_audit_valid===false?'fail':'warn']]){const n=node('div',title,'three-check '+cls);n.append(node('b',text));box.append(n);}if(report.bundle_status==='partial')box.append(node('p','partial 是部分结果；步骤可预览不代表说明书已完全认证。','hint'));}
 function updateStep(){clearInterval(playback);playback=null;$('threePlay').textContent='播放';showStep();}
 function showStep(){const value=Number($('threeStep').value);resultView?.step(value);$('threeStepValue').textContent=`${value} / ${$('threeStep').max}`;document.querySelectorAll('#threeStepList button').forEach(b=>b.classList.toggle('current',Number(b.dataset.step)===value));const info=state.assembly?.input?.step_count===resultView.maxSteps?state.assembly?.steps?.find(s=>s.index===value):null;$('threeStepNote').textContent=info?`第 ${value} 步 · ${info.size??'—'} 件 · 前缀稳定：${info.prefix_stable===true?'是':info.prefix_stable===false?'否':'未判定'}${info.flags?.length?' · '+info.flags.join('、'):''}`:`展开文件步骤 ${value}：新增 ${resultView.partSteps?.[value-1]??0} 件。含子装配时，与顶层审计的步数口径不同；审计见原报告。`;}
 async function showAsset(asset){if(!asset||!resultView)return;selected=asset.id;document.querySelectorAll('#threeAssets button').forEach(b=>b.classList.toggle('active',b.dataset.asset===selected));$('threeResultTitle').textContent=asset.label;$('threeAssetNote').textContent=asset.note||'';$('threeStats').textContent=asset.stats?Object.entries(asset.stats).map(([k,v])=>`${k}: ${typeof v==='object'?JSON.stringify(v):v}`).join(' · '):'';updateStep();$('threeStepControls').hidden=true;if(asset.kind==='image'){$('threeTextureImage').hidden=false;$('threeResultView').hidden=true;$('threeAtlas').src=asset.url;return;}$('threeTextureImage').hidden=true;$('threeResultView').hidden=false;try{const count=await resultView.load(asset);if(count===undefined||selected!==asset.id)return;if(asset.kind==='lego'){$('threeStepControls').hidden=false;$('threeStep').max=count;$('threeStep').value=count;$('threeStepList').replaceChildren();for(let i=1;i<=count;i++){const info=state.assembly?.input?.step_count===resultView.maxSteps?state.assembly?.steps?.find(s=>s.index===i):null;const pieceCount=resultView.partSteps?.[i-1];const button=node('button',`第 ${i} 步${pieceCount?' · '+pieceCount+' 件':''}`,info?.prefix_stable===false?'unstable':'');button.type='button';button.dataset.step=i;button.onclick=()=>{$('threeStep').value=i;updateStep();};$('threeStepList').append(button);}showStep();}}catch(error){message(error.message,true);}}
 function renderAssets(){const assets=state.assets||[],newSignature=JSON.stringify(assets.map(a=>[a.id,a.path]));if(signature!==newSignature){signature=newSignature;const box=$('threeAssets');box.replaceChildren();for(const asset of assets.filter(a=>['mesh','points','voxel','lego','image'].includes(a.kind)&&a.id!=='source')){const b=node('button',asset.label);b.type='button';b.dataset.asset=asset.id;b.onclick=()=>showAsset(asset);box.append(b);}const downloads=$('threeDownloads');downloads.replaceChildren();for(const asset of assets){const link=node('a',asset.label);link.href=asset.url;link.download=baseName(asset.path);downloads.append(link);}const current=assets.find(a=>a.id===selected);const newest=assets.find(a=>a.id==='lego')||assets.find(a=>a.id==='lego_candidate')||assets.find(a=>a.id==='texture')||assets.find(a=>a.id==='mesh')||assets.find(a=>a.id==='voxel');if(newest&&(!current||state.running||!selected))showAsset(newest);else if(current)showAsset(current);}const original=assets.find(a=>a.id==='source');if(original&&sourceSignature!==original.path){sourceSignature=original.path;$('threeInputKind').textContent=original.kind==='points'?'· 点云':'· Mesh';sourceView?.load(original).catch(e=>message(e.message,true));}}
 function renderStages(){const box=$('threeStages');box.replaceChildren();const stages=state.stages||[];for(const stage of stages){const s=stage.id==='assembly'&&state.report?.legolization?.instruction_audit_valid===false?{...stage,status:'partial'}:stage;const n=node('button',s.label,'step '+(s.status==='running'?'active':s.status==='partial'?'wait':s.status==='complete'?'active':s.status==='failed'?'failed':''));n.type='button';n.title=states[s.status]||s.status;n.onclick=()=>{const asset=(state.assets||[]).find(a=>a.stage===s.id&&['mesh','points','voxel','lego'].includes(a.kind));if(asset)showAsset(asset);};box.append(n);}}
-async function refresh(){if(!bootstrap||window.uiMode!=='3d')return;try{const requestedFlow=flow;const nextState=await request('/api/3d/status?flow='+requestedFlow);if(requestedFlow!==flow)return;state=nextState;window.threePipelineState=state;$('threeBadge').textContent=states[state.status]||state.status;$('badge').textContent='3D · '+(states[state.status]||state.status);$('threeElapsed').textContent=(state.elapsed||0)+' 秒';$('threeRunPath').textContent=state.output||'尚未运行';$('threeLog').textContent=state.logs||'等待任务……';for(const id of ['threeRun','threePrepare','threeDemo','threeChoose','threeFlow','threeLoadHistory'])$(id).disabled=state.busy;$('threeStop').disabled=!state.running;renderStages();renderAssets();renderChecks();if(['failed','interrupted','cancelled'].includes(state.status))message(state.message,state.status==='failed');const history=$('threeHistory'),value=history.value;history.replaceChildren();for(const row of state.history||[]){const op=node('option',baseName(row.output)+' · '+(states[row.status]||row.status));op.value=row.output;history.append(op);}if([...history.options].some(o=>o.value===value))history.value=value;else if(state.output)history.value=state.output;}catch(error){message(error.message,true);}finally{clearTimeout(poll);poll=setTimeout(refresh,1200);}}
-async function start(prepareOnly){try{message('');selected='';signature='';sourceSignature='';sourceView?.clear();resultView?.clear();sourceView?.text('正在读取原文件…');resultView?.text('等待阶段产物…');updateStep();$('threeStepControls').hidden=true;await request('/api/3d/start',{flow,source,options:options(),prepare_only:prepareOnly});await refresh();}catch(error){message(error.message,true);}}
-async function changeFlow(){flow=$('threeFlow').value;localStorage.setItem('threeFlow',flow);source='demo';selected='';signature='';sourceSignature='';updateStep();$('threeStepControls').hidden=true;sourceView?.clear();resultView?.clear();sourceView?.text('载入默认输入…');resultView?.text('选择阶段产物查看');configFlow();message('');await refresh();if(state.options)applyOptions(state.options);if(state.source){source=state.source;$('threeSourceName').textContent='当前结果输入：'+baseName(state.source);}}
-$('threeFlow').addEventListener('change',changeFlow);$('threeRun').onclick=()=>start(false);$('threePrepare').onclick=()=>start(true);$('threeStop').onclick=async()=>{await request('/api/3d/stop',{});await refresh();};$('threeChoose').onclick=()=>$('threeFile').click();
-$('threeFile').addEventListener('change',async()=>{const file=$('threeFile').files[0];if(!file)return;try{message('正在上传 '+file.name);const buffer=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<buffer.length;i+=32768)binary+=String.fromCharCode(...buffer.subarray(i,i+32768));const result=await request('/api/3d/upload',{flow,name:file.name,data:btoa(binary)});source=result.path;applyOptions({source_unit_mm:1,source_up_axis:'z'});$('threeSourceName').textContent='已选择：'+file.name+'；请确认单位和上轴';message('文件已选择。确认参数后点击“处理并预览”或“转换并生成 LEGO”。');}catch(error){message(error.message,true);}finally{$('threeFile').value='';}});
-$('threeDemo').onclick=async()=>{try{source='demo';configFlow();selected='';signature='';sourceSignature='';await request('/api/3d/demo',{flow});await refresh();if(state.options)applyOptions(state.options);}catch(error){message(error.message,true);}};
+async function refresh() {
+    if (!bootstrap || window.uiMode !== '3d') return;
+    const id = ++refreshId;
+    try {
+        const requestedFlow = flow;
+        const nextState = await request('/api/3d/status?flow=' + requestedFlow);
+        if (id !== refreshId || requestedFlow !== flow) return;
+        state = nextState;
+        window.threePipelineState = state;
+        for (const id of ['threeRun','threePrepare','threeQuickLayout','threeDemo','threeChoose','threeFlow','threeLoadHistory','threeExamples']) {
+            $(id).disabled = state.busy;
+        }
+        $('threeDemo').disabled = state.busy || loadingExample;
+        $('threeStop').disabled = !state.running;
+        const status = states[state.status] || state.status;
+        $('threeBadge').textContent = status;
+        $('badge').textContent = '3D · ' + status;
+        $('threeElapsed').textContent = (state.elapsed || 0) + ' 秒';
+        $('threeRunPath').textContent = state.output || '尚未运行';
+        $('threeLog').textContent = state.logs || '等待任务……';
+        renderStages();
+        renderAssets();
+        renderChecks();
+        if (['failed','interrupted','cancelled'].includes(state.status)) message(state.message, state.status === 'failed');
+        const history = $('threeHistory'), value = history.value;
+        history.replaceChildren();
+        for (const row of state.history || []) {
+            const option = node('option', (row.example?.label || baseName(row.output)) + ' · ' + (states[row.status] || row.status));
+            option.value = row.output;
+            history.append(option);
+        }
+        if ([...history.options].some(option => option.value === value)) history.value = value;
+        else if (state.output) history.value = state.output;
+    } catch (error) {
+        if (id === refreshId) message(error.message, true);
+    } finally {
+        if (id === refreshId) {
+            clearTimeout(poll);
+            poll = setTimeout(refresh, 1200);
+        }
+    }
+}
+async function start(prepareOnly, layoutOnly=false){try{message('');selected='';signature='';sourceSignature='';sourceView?.clear();resultView?.clear();sourceView?.text('正在读取原文件…');resultView?.text('等待阶段产物…');updateStep();$('threeStepControls').hidden=true;await request('/api/3d/start',{flow,source,options:options(),prepare_only:prepareOnly,layout_only:layoutOnly});await refresh();}catch(error){message(error.message,true);}}
+async function changeFlow(){flow=$('threeFlow').value;localStorage.setItem('threeFlow',flow);source='demo';selected='';signature='';sourceSignature='';updateStep();$('threeStepControls').hidden=true;sourceView?.clear();resultView?.clear();sourceView?.text('载入默认输入…');resultView?.text('选择阶段产物查看');configFlow();configureExamples();message('');await refresh();if(state.options)applyOptions(state.options);showSelectedSource();}
+$('threeFlow').addEventListener('change',changeFlow);$('threeRun').onclick=()=>start(false);$('threePrepare').onclick=()=>start(true);$('threeQuickLayout').onclick=()=>start(false,true);$('threeStop').onclick=async()=>{await request('/api/3d/stop',{});await refresh();};$('threeChoose').onclick=()=>$('threeFile').click();
+$('threeFile').addEventListener('change',async()=>{const file=$('threeFile').files[0];if(!file)return;try{message('正在上传 '+file.name);const result=await uploadFile('/api/3d/upload',file,{flow});source=result.path;sourceSignature='';applyOptions({source_unit_mm:1,source_up_axis:'z'});$('threeSourceName').textContent='已选择：'+file.name+'；请确认单位和上轴';message('文件已选择。确认参数后点击“处理并预览”或“转换并生成 LEGO”。');}catch(error){message(error.message,true);}finally{$('threeFile').value='';}});
+$('threeDemo').onclick = async () => {
+    loadingExample = $('threeDemo').disabled = true;
+    try {
+        message('');
+        const exampleId = $('threeExamples').value;
+        const result = await request('/api/3d/demo', {flow, example_id: exampleId});
+        flow = result.flow || flow;
+        localStorage.setItem('threeFlow', flow);
+        source = 'demo';
+        configFlow();
+        if (result.options) applyOptions(result.options);
+        showSelectedSource(result);
+        selected = signature = sourceSignature = '';
+        await refresh();
+    } catch (error) {
+        message(error.message, true);
+    } finally {
+        loadingExample = false;
+        $('threeDemo').disabled = Boolean(state.busy);
+    }
+};
 $('threeLoadHistory').onclick=async()=>{try{if(!$('threeHistory').value)return;await request('/api/3d/load',{flow,output:$('threeHistory').value});selected='';signature='';sourceSignature='';await refresh();if(state.options)applyOptions(state.options);source=state.source||'demo';$('threeSourceName').textContent='当前结果输入：'+baseName(source);}catch(error){message(error.message,true);}};
 $('threeStep').oninput=updateStep;$('threePrevious').onclick=()=>{$('threeStep').value=Math.max(1,Number($('threeStep').value)-1);updateStep();};$('threeNext').onclick=()=>{$('threeStep').value=Math.min(Number($('threeStep').max),Number($('threeStep').value)+1);updateStep();};$('threePlay').onclick=()=>{if(playback){updateStep();return;}if(Number($('threeStep').value)>=Number($('threeStep').max))$('threeStep').value=1;$('threePlay').textContent='暂停';showStep();playback=setInterval(()=>{if(Number($('threeStep').value)>=Number($('threeStep').max)){updateStep();return;}$('threeStep').value=Number($('threeStep').value)+1;showStep();},900);};
-try{bootstrap=await request('/api/3d/bootstrap');if(!bootstrap.flows.some(f=>f.id===flow))flow='stl';configFlow();if(!bootstrap.core_available)message('请配置三维处理模块 LEGOLIZER_ROOT 与 PROCESSING3D_PYTHON',true);const mode=new URLSearchParams(location.search).get('mode')||localStorage.getItem('pipelineMode')||document.body.dataset.defaultMode||'image';setMode(mode);if(window.uiMode==='3d'){await refresh();if(state.options)applyOptions(state.options);if(state.source){source=state.source;$('threeSourceName').textContent='当前结果输入：'+baseName(source);}}}catch(error){message('3D 工作台初始化失败：'+error.message,true);}
+try{bootstrap=await request('/api/3d/bootstrap');if(!bootstrap.flows.some(f=>f.id===flow))flow='stl';configFlow();configureExamples();if(!bootstrap.core_available)message('请配置三维处理模块 LEGOLIZER_ROOT 与 PROCESSING3D_PYTHON',true);const mode=new URLSearchParams(location.search).get('mode')||localStorage.getItem('pipelineMode')||document.body.dataset.defaultMode||'image';setMode(mode);if(window.uiMode==='3d'){await refresh();if(state.options)applyOptions(state.options);showSelectedSource();}}catch(error){message('3D 工作台初始化失败：'+error.message,true);}

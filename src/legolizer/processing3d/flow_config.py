@@ -2,14 +2,14 @@
 
 import math
 
-
 POINT_CLOUD_MESH_PROFILE = "poisson-local"
+TIKO_EXPOSURE_STOPS = 1.35
 
 
 FLOWS = {
     "stl": {"label": "STL → LEGO", "demo": "bunny.stl", "unit": 1000., "axis": "y"},
     "ply_plain": {"label": "无色 PLY → Mesh → LEGO", "demo": "rhino.ply", "unit": 1., "axis": "y"},
-    "ply_color": {"label": "有色 PLY → Mesh / 贴图 → LEGO", "demo": "tiko_10000_points.ply", "unit": 1., "axis": "y"},
+    "ply_color": {"label": "有色 PLY → Mesh / 贴图 → LEGO", "demo": "tiko_50000_points.ply", "unit": 1., "axis": "y"},
 }
 
 
@@ -21,15 +21,20 @@ def validate_options(flow: str, options: dict) -> dict:
     result = dict(source_unit_mm=FLOWS[flow]["unit"], source_up_axis=FLOWS[flow]["axis"],
                   target_width_studs=12, poisson_depth=7, density_quantile=.005,
                   quality="direct", duration_seconds=60., color=4, instruction_mode="layer")
+    if flow == "ply_color":
+        result["palette_exposure_stops"] = None
     for key in result:
         if key in options:
             result[key] = options[key]
-    for key, low, high, integer in (("source_unit_mm", 1e-9, 1e9, False),
+    ranges = (("source_unit_mm", 1e-9, 1e9, False),
                                   ("target_width_studs", 4, 64, True),
                                   ("poisson_depth", 5, 10, True),
                                   ("density_quantile", 0, .2, False),
                                   ("duration_seconds", 5, 3600, False),
-                                  ("color", 0, 10000, True)):
+                                  ("color", 0, 10000, True))
+    if flow == "ply_color" and result["palette_exposure_stops"] is not None:
+        ranges += (("palette_exposure_stops", -3., 3., False),)
+    for key, low, high, integer in ranges:
         value = result[key]
         if isinstance(value, bool):
             raise ValueError(f"{key} 必须为有效数字")

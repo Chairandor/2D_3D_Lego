@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f3e9">
+  <title>OpenMask3D · 场景探索</title>
+  <link rel="stylesheet" href="/scene-explorer/style.css">
+  <script defer src="/scene-explorer/static/plotly.min.js"></script>
+  <script defer src="/scene-explorer/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/scene-explorer/" aria-label="OpenMask3D 首页">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="m16 3 12 7v13l-12 7-12-7V10Z M4 10l12 7 12-7 M16 17v13 M10 6.5l12 7v13"/></svg>
+      <span>OpenMask<span class="brand-accent">3D</span></span>
+    </a>
+    <div class="connection" id="connection"><i></i><span>连接服务器…</span></div>
+  </header>
+
+  <main class="workspace">
+    <aside class="sidebar">
+      <div class="sidebar-intro">
+        <h1>按描述查找物体</h1>
+      </div>
+
+      <div class="scene-picker"><label for="scene-select">选择场景</label><select id="scene-select" disabled><option>正在连接服务器…</option></select></div>
+
+      <form id="query-form" class="query-form">
+        <label for="query">你想找什么？</label>
+        <div class="input-wrap"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input id="query" name="query" autocomplete="off" placeholder="a chair / 椅子" maxlength="256" required value="a chair"></div>
+        <div class="form-options"><span>返回候选数量</span><select id="top-k" aria-label="返回候选数量"><option value="3">3 个实例</option><option value="5">5 个实例</option><option value="10">10 个实例</option></select></div>
+        <button id="search" class="search-button" type="submit"><span id="search-label">查找物体</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15m-6-6 6 6-6 6"/></svg></button>
+        <div id="prompt-chips" class="prompt-chips" aria-label="示例提示词"></div>
+        <p class="input-note">常见中文物体会自动转换为英文，复杂描述建议使用英文。</p>
+      </form>
+
+      <div class="results-header"><h2>匹配结果 <span id="result-count">—</span></h2><button id="save-json" class="text-button" hidden>导出 JSON ↗</button></div>
+      <div id="query-status" class="query-status" role="status" aria-live="polite">输入提示词，开始第一次查询。</div>
+      <div id="query-warning" class="warning" hidden></div>
+      <div id="results" class="results-list"><div class="empty-state"><p>查询后，点击候选查看高亮和原始图像。</p></div></div>
+      <div class="sidebar-foot"><span class="tiny-dot"></span> 相似度为 CLIP 余弦相似度，不是概率。</div>
+    </aside>
+
+    <section class="scene-area" aria-label="三维场景和实例详情">
+      <div class="scene-heading"><div><h2 id="scene-title">正在加载场景…</h2></div></div>
+      <p id="scene-description" class="scene-description"></p>
+      <div class="stats"><div><strong id="point-count">—</strong><span>三维点</span></div><div><strong id="mask-count">—</strong><span>实例候选</span></div><div><strong id="valid-count">—</strong><span>可检索实例</span></div></div>
+
+      <div class="viewer-shell">
+        <div id="viewer" aria-label="可拖动旋转和滚轮缩放的三维点云"></div>
+        <div id="viewer-loading" class="viewer-loading"><span class="loader"></span><p>正在加载三维场景</p><small>首次加载会传输点云预览</small></div>
+        <div class="viewer-topline"><span><i></i><span id="view-label">完整场景</span></span><span id="preview-count">POINT CLOUD</span></div>
+        <div class="viewer-controls"><label><input type="checkbox" id="show-context" checked disabled><span>显示场景背景</span></label><button type="button" id="focus" disabled>聚焦实例</button><button type="button" id="reset-camera" disabled>重置视角</button></div>
+        <div class="viewer-hint">拖动旋转 <span>·</span> 滚轮缩放 <span>·</span> 右键平移</div>
+      </div>
+
+      <section class="detail-panel">
+        <div class="detail-heading"><div><h3 id="detail-title">从照片到三维空间</h3></div><div class="detail-actions"><a id="download-instance" class="download-button" hidden>下载实例 PLY</a><button id="use-instance" class="search-button use-instance" type="button" hidden>用此目标生成 LEGO</button></div></div>
+        <div class="image-grid" id="image-grid"></div>
+        <p id="detail-note" class="detail-note">选择一个匹配实例，查看用于提取语义特征的图像裁剪。下载文件包含该实例的原始三维点。</p>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

@@ -10,16 +10,25 @@ from typing import Any
 
 import numpy as np
 
-from legolizer.processing3d.volume import VoxelVolume
+from legolizer.processing3d.volume import UNCONSTRAINED_COLOR, VoxelVolume
 from legolizer.constants import DEFAULT_PROJECT_DIR
+
+
+def solver_environment() -> dict[str, str]:
+    """Limit native library thread pools in solver children to avoid Windows allocation failures."""
+    env = os.environ.copy()
+    env.update(OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1", OMP_NUM_THREADS="2", PYTHONIOENCODING="utf-8")
+    return env
 
 
 def export_legolization_npy(
     volume_or_path: VoxelVolume | str | Path,
     output_path: str | Path,
     fallback_color: int = 4,
+    *,
+    preserve_unconstrained: bool = False,
 ) -> Path:
-    """导出 legolization 可读的 ``(x,y,z)`` LDraw 色号 NPY。"""
+    """导出 bundle 输入，或显式保留内部自由色号给原生布局接口。"""
     volume = (
         VoxelVolume.load(volume_or_path)
         if isinstance(volume_or_path, (str, Path))
@@ -28,7 +37,11 @@ def export_legolization_npy(
     codes = np.full(volume.occupancy.shape, -1, dtype=np.int16)
     codes[volume.occupancy] = fallback_color
     if volume.colors is not None:
-        colored = volume.occupancy & (volume.colors >= 0)
+        # bundle validates LDraw codes on import and frees invisible cells itself.
+        known_colors = volume.colors >= 0
+        if preserve_unconstrained:
+            known_colors |= volume.colors == UNCONSTRAINED_COLOR
+        colored = volume.occupancy & known_colors
         codes[colored] = volume.colors[colored]
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -106,11 +119,14 @@ def run_legolization_bundle(
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=solver_environment(),
     )
     # 2/3/4 是上游定义的可解析领域结果（不可拼、部分完成、精确求解上限），
     # 只有 1 等操作性错误才应在适配器边界抛异常。
     if completed.returncode not in {0, 2, 3, 4}:
         detail = completed.stderr.strip() or completed.stdout.strip()
+        if "MemoryError:" in detail or "std::bad_alloc" in detail:
+            raise RuntimeError("legolization 求解内存不足，请减小 LEGO 宽度后重试") from MemoryError(detail)
         raise RuntimeError(
             f"legolization 失败（exit={completed.returncode}）: {detail}"
         )
@@ -125,3 +141,34 @@ def run_legolization_bundle(
     except json.JSONDecodeError:
         pass
     return payload
+
+
+def run_layout_preview(volume: VoxelVolume, output_dir: Path, project_dir: Path, budget: float, color: int) -> dict:
+    """Run single-pass layout in the backend environment, with an independent wall-clock limit."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    source = export_legolization_npy(volume, output_dir / "legolization_input.npy", color, preserve_unconstrained=True)
+    model = output_dir / "layout_preview.ldr"
+    native = project_dir / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if native.is_file():
+        command = [str(native)]
+    elif shutil.which("uv"):
+        command = ["uv", "run", "--project", str(project_dir), "python"]
+    else:
+        raise RuntimeError("没有找到 legolization 的 Python 环境")
+    # Isolate imports so the worker loads the installed backend, not this adapter's filename.
+    command += ["-I", str(Path(__file__).with_name("layout_preview_worker.py")), str(source.resolve()), str(model.resolve()), str(budget)]
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, encoding="utf-8", errors="replace", env=solver_environment()) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=budget)
+        except subprocess.TimeoutExpired as exc:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, timeout=5)
+            if process.poll() is None:
+                process.kill()
+            process.communicate()
+            raise RuntimeError(f"快速布局在 {budget:g} 秒内未返回，请增加预算或降低 studs") from exc
+    if process.returncode or not model.is_file():
+        raise RuntimeError("快速布局失败：" + (stderr.strip() or stdout.strip())[-1800:])
+    return dict(json.loads(stdout.splitlines()[-1]), mode="layout-preview", placement_strategy="fast",
+                model_path=str(model), buildable=None, stable=None, instructions_status="未执行")

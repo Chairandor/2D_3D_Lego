@@ -37,6 +37,7 @@ import ui_result_folders
 import stage_console
 import model_edit_bridge
 import model_editing
+import ui_scene_explorer
 
 
 from project_config import load_project_config, venv_executable, terminate_process_tree
@@ -2014,8 +2015,12 @@ HTML = HTML.replace('<div class="grid"><section class="panel stage-console">',
     + THREE_D_HTML + '<div id="imageWorkflow" class="grid"><section class="panel stage-console">', 1)
 HTML = HTML.replace('</body></html>', '<script type="module" src="/static/three-pipeline.js"></script></body></html>', 1)
 HTML = HTML.replace('<button id="mode3dButton" type="button">3D 文件 → LEGO</button>',
-                    '<button id="mode3dButton" type="button">3D 文件 → LEGO</button><button id="modeArButton" type="button">ArUco 预览</button>', 1)
-HTML = HTML.replace('<div id="imageWorkflow"', (STATIC_ROOT / 'aruco-panel.html').read_text(encoding='utf-8') + '<div id="imageWorkflow"', 1)
+                    '<button id="mode3dButton" type="button">3D 文件 → LEGO</button>'
+                    '<button id="modeSceneButton" type="button">场景分割 → LEGO</button>'
+                    '<button id="modeArButton" type="button">ArUco 预览</button>', 1)
+HTML = HTML.replace('<div id="imageWorkflow"', (STATIC_ROOT / 'scene-lego.html').read_text(encoding='utf-8')
+                    + (STATIC_ROOT / 'aruco-panel.html').read_text(encoding='utf-8') + '<div id="imageWorkflow"', 1)
+HTML = HTML.replace('</body></html>', '<script type="module" src="/static/scene-lego.js"></script></body></html>', 1)
 HTML = HTML.replace('</body></html>', '<script type="module" src="/static/aruco-panel.js"></script></body></html>', 1)
 
 
@@ -2082,9 +2087,37 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("请求体超过 172 MiB；几何文件限 128 MiB")
         return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
 
+    def serve_scene_explorer(self, parsed: urllib.parse.ParseResult, data: dict | None = None) -> None:
+        path = parsed.path.removeprefix(ui_scene_explorer.PREFIX)
+        assets = {"/": ("index.html", "text/html; charset=utf-8"),
+                  "/style.css": ("style.css", "text/css; charset=utf-8"),
+                  "/app.js": ("app.js", "text/javascript; charset=utf-8")}
+        try:
+            if data is None and path in assets:
+                name, content_type = assets[path]
+                body = (STATIC_ROOT / "scene-explorer" / name).read_bytes()
+                status, disposition = 200, None
+            else:
+                status, content_type, disposition, body = ui_scene_explorer.fetch(path, parsed.query, data)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, status=400 if isinstance(exc, ValueError) else 502)
+            return
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("Cache-Control", "public, max-age=3600" if path == "/static/plotly.min.js" and status == 200 else "no-store")
+        if disposition:
+            self.send_header("Content-Disposition", disposition)
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path.startswith('/api/ar/'):
+        if parsed.path.startswith(ui_scene_explorer.PREFIX + "/"):
+            self.serve_scene_explorer(parsed)
+        elif parsed.path.startswith('/api/ar/'):
             self.serve_aruco(parsed)
         elif parsed.path.startswith("/api/3d/"):
             query = urllib.parse.parse_qs(parsed.query)
@@ -2093,14 +2126,14 @@ class Handler(BaseHTTPRequestHandler):
                 if parsed.path == "/api/3d/bootstrap":
                     self.send_json(THREE_D.bootstrap())
                 elif parsed.path == "/api/3d/status":
-                    self.send_json(THREE_D.status(flow))
+                    self.send_json(THREE_D.status(flow, query.get("output", [None])[0]))
                 else:
                     self.send_error(HTTPStatus.NOT_FOUND)
             except (ValueError, OSError) as exc:
                 self.send_json({"error": str(exc)}, status=400)
         elif parsed.path == "/":
             mode = os.environ.get('PIPELINE_UI_DEFAULT_MODE', 'image')
-            if mode not in {'image', '3d', 'ar'}:
+            if mode not in {'image', '3d', 'scene', 'ar'}:
                 mode = 'image'
             models = ui_assistant.direct_models()
             model_buttons = "\n".join(
@@ -2265,6 +2298,18 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", "0"))
                 self.send_json(MODEL_EDITS.open_uploaded(self.rfile, length))
                 return
+            if self.path == ui_scene_explorer.PREFIX + "/api/query":
+                origin = self.headers.get("Origin")
+                if origin and urllib.parse.urlparse(origin).netloc != self.headers.get("Host"):
+                    self.send_json({"error": "仅允许当前工作台发起场景查询"}, status=403)
+                    return
+                if not 0 < int(self.headers.get("Content-Length", "0")) <= 4096:
+                    raise ValueError("请输入有效的场景查询内容")
+                payload = self.read_json()
+                if not isinstance(payload, dict):
+                    raise ValueError("场景查询需要 JSON 对象")
+                self.serve_scene_explorer(urllib.parse.urlparse(self.path), payload)
+                return
             data = self.read_json()
             if CONTROLLER.opened_view() is not None and self.path in {
                 "/api/revision/upload", "/api/revision/choose", "/api/revision/load-version", "/api/assistant/chat",
@@ -2302,10 +2347,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_error(HTTPStatus.NOT_FOUND)
             elif self.path.startswith("/api/3d/"):
                 if self.path == "/api/3d/stop":
-                    THREE_D.stop()
+                    THREE_D.stop(str(data["output"]) if data.get("output") else None)
                     self.send_json({"ok": True})
                 else:
-                    if CONTROLLER.is_running() or AI_EDITOR.is_running():
+                    importing_instance = self.path == "/api/3d/scene-instance" or (
+                        self.path == "/api/3d/openmask/upload" and data.get("kind") == "instance"
+                    )
+                    if not importing_instance and (CONTROLLER.is_running() or AI_EDITOR.is_running()):
                         raise RuntimeError("其他流水线正在运行，请先等待或停止")
                     if self.path == "/api/3d/start":
                         self.send_json(THREE_D.start(data))
@@ -2315,7 +2363,43 @@ class Handler(BaseHTTPRequestHandler):
                     elif self.path == "/api/3d/load":
                         self.send_json(THREE_D.load(str(data.get("flow", "")), str(data.get("output", ""))))
                     elif self.path == "/api/3d/demo":
-                        self.send_json(THREE_D.load_demo(str(data.get("flow", ""))))
+                        example_id = data.get("example_id")
+                        self.send_json(THREE_D.load_example(str(example_id)) if example_id
+                                       else THREE_D.load_demo(str(data.get("flow", ""))))
+                    elif self.path == "/api/3d/openmask/upload":
+                        raw = base64.b64decode(str(data.get("data", "")), validate=True)
+                        self.send_json(THREE_D.upload_openmask(str(data.get("name", "")), raw, str(data.get("kind", ""))))
+                    elif self.path == "/api/3d/scene-instance":
+                        scene = str(data.get("scene", ""))
+                        instance = data.get("instance")
+                        name, ply = ui_scene_explorer.download_instance(scene, instance)
+                        uploaded = THREE_D.upload_openmask(name, ply, "instance")
+                        ui_3d_jobs._write(Path(uploaded["path"]).with_suffix(".json"), {
+                            "method": "openmask3d", "dataset": scene, "instance": instance,
+                            "points": uploaded["scene_points"], "path": uploaded["path"],
+                        })
+                        self.send_json(dict(uploaded, name=name))
+                    elif self.path == "/api/3d/openmask/dataset":
+                        self.send_json(THREE_D.load_openmask_scene(str(data.get("id", ""))))
+                    elif self.path == "/api/3d/openmask/query":
+                        point = data.get("point")
+                        if point is not None and (type(point) is not int or point < 0):
+                            raise ValueError("请选择有效的场景顶点")
+                        self.send_json(THREE_D.query_openmask_scene(str(data.get("token", "")), str(data.get("query", "")), point))
+                    elif self.path == "/api/3d/openmask/instances":
+                        instance = data.get("instance")
+                        point = data.get("point")
+                        if instance is not None and (type(instance) is not int or instance < 0):
+                            raise ValueError("请选择有效的实例编号")
+                        if point is not None and (type(point) is not int or point < 0):
+                            raise ValueError("请选择有效的场景顶点")
+                        self.send_json(THREE_D.openmask_instances(str(data.get("scene", "")),
+                                                                 str(data.get("masks", "")), instance, point))
+                    elif self.path == "/api/3d/openmask/run":
+                        point = data.get("point")
+                        if type(point) is not int or point < 0:
+                            raise ValueError("请先选择场景中的一个点")
+                        self.send_json(THREE_D.generate_openmask(str(data.get("scene", "")), point))
                     else:
                         self.send_error(HTTPStatus.NOT_FOUND)
             elif self.path == "/api/start":
@@ -2607,7 +2691,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=7865)
     parser.add_argument("--no-browser", action="store_true")
-    parser.add_argument('--mode', choices=['image', '3d', 'ar'], help='初始工作台标签')
+    parser.add_argument('--mode', choices=['image', '3d', 'scene', 'ar'], help='初始工作台标签')
     parser.add_argument("--run-dir", type=Path, help="载入已有运行目录，仅用于显示产物")
     args = parser.parse_args()
     if args.mode:
